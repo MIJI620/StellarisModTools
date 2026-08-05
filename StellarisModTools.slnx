@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="Stellaris.Editor/Stellaris.Editor.csproj" />
+  <Project Path="Stellaris.Engine/Stellaris.Engine.csproj" />
+  <Project Path="Stellaris.Parser/Stellaris.Parser.csproj" />
+  <Project Path="Stellaris.Tests/Stellaris.Tests.csproj" />
+</Solution>

@@ -1,0 +1,33 @@
+MIT License
+
+Copyright (c) 2026 MIJI620
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---------------------------------------------------------------------
+附加声明（非 MIT 标准条款，正文之外单独列明）：
+
+禁止将本软件"完全原样"打包后直接倒卖或收费分发。
+
+"原样"的定义为：任何文件（包括但不限于程序代码、本地化文本、
+配置、图标等所有素材）均未做任何改动。
+
+只要对软件做了任何修改（包括但不限于本地化翻译、配置调整、
+功能增减、界面改动等），即不视为"原样"，不受本附加声明限制。
+---------------------------------------------------------------------

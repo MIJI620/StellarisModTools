@@ -1,0 +1,23 @@
+namespace = more_galaxy_test
+
+country_event = {
+    id = more_galaxy_test.0000
+    title = more_galaxy.0000.title
+    desc = more_galaxy.0000.desc
+    picture = GFX_evt_gray_goo
+    is_triggered_only = yes
+    trigger = {
+        is_ai = no
+    }
+
+    immediate = {
+        inline_script = {
+            script = test/test1
+            Text = test_the_inline_script
+        }
+        inline_script = {
+            script = test/test2
+            test = Alpha
+        }
+    }
+}

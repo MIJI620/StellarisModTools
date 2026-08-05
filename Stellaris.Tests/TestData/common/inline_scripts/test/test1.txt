@@ -1,0 +1,4 @@
+inline_script = {
+    script = test/test2
+    test = $Text$
+}

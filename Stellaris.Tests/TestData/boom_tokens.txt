@@ -1,0 +1,11 @@
+# 爆炸陷阱样例（抗爆炸测试专用——用户要求）
+# 解析器遇到以下错误 token 不应崩溃：应跳过/记录错误行，并继续解析后续正常内容。
+??? = { "unclosed string
+key = 1.2.3
+@#!$% = value
+} } }
+broken = { nested = { deep = { unclosed
+normal_key = "ok_value"
+list = { 1 2 3 }
+# 注释行混在错误中间
+key2 = 42

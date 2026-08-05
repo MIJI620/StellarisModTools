@@ -1,0 +1,44 @@
+# Icons set here are the ones show in the actual slot. The reason is so that we can support different icons for different sizes.
+
+# Updated Range on these
+
+# DEFAULT VALUES:
+# is_missile = no
+# is_beam = no
+# is_point_defence = no
+
+#NOTE that values from weapon_components.csv will override values from this file
+
+# ####################
+# Laser
+# ####################
+
+@cost = 7
+
+### Red Lasers
+weapon_component_template = {
+	key = "TEST_RED_LASER"
+	size = small
+	type = instant
+	potential = {
+		always = no
+	}
+
+	icon = "GFX_ship_part_laser_1"
+	icon_frame = 1
+	prerequisites = { "tech_lasers_1" }
+	component_set = "RED_LASER"
+	projectile_gfx = "infrared_laser_s"
+	tags = { weapon_type_energy s_slot }
+	ai_tags = { weapon_role_anti_armor gunship }	#tags must be pre-registered in common/weapon_tags
+	resources = {
+		category = ship_components
+		cost = {
+			alloys = @cost
+		}
+		upkeep = {
+			energy = @[ cost + cost ]
+			alloys = @[ cost * 5 ]
+		}
+	}
+}

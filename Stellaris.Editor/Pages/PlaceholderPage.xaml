@@ -1,0 +1,7 @@
+<UserControl x:Class="Stellaris.Editor.Pages.PlaceholderPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+        <TextBlock x:Name="Message" FontSize="16" Foreground="#909090" TextAlignment="Center" TextWrapping="Wrap" Margin="24" />
+    </StackPanel>
+</UserControl>

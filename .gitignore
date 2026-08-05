@@ -1,0 +1,30 @@
+# ===== .NET / Visual Studio =====
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.userosscache
+*.pubxml
+
+# ===== 发布与打包（源代码以外） =====
+exe/
+Portable-ZIP/
+runtimes/
+*.zip
+
+# ===== 非必要素材 / 备份 / 临时 =====
+icon/
+_backup/
+_probe/
+
+# ===== 本地配置 / 日志 =====
+config/
+*.log
+
+# ===== 编辑器 / 工具 =====
+.reasonix/
+
+# ===== 说明 =====
+# localisation/（界面本地化 json + 语言表）保留上传——语言文件是源码的一部分。
+# icon/ 不传（非必要素材）；csproj 已对 icon 引用做 Condition="Exists(...)"，clone 后无 icon 也能构建。

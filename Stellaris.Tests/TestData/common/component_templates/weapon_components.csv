@@ -1,0 +1,8 @@
+# Lines starting with # will be treated as comments.;;;;;;;;;;;;;;;;;;;;;;;;
+# This file can be reloaded with the reload stats console command;;;;;;;;;;;;;;;;;;;;;;;;
+#;;;;;;;;;;;;;;;;;;missile weapons only;;;;;;
+#;;;;;;;%of dmg that will;;%of dmg that will;;100.00;50.00;;;;;;minimum speed;;;;;;
+#;;;;;%bonus dmg;%bonus dmg;go through shields;%bonus dmg;go through armor;;;;;;;;;of missiles;;;;;;
+key;cost;power;min_damage;max_damage;hull_damage;shield_damage;shield_penetration;armor_damage;armor_penetration;min_windup;max_windup;cooldown;range;accuracy;tracking;size_damage_factor;military_power_multiplier;missile_speed;missile_evasion;missile_shield;missile_armor;missile_health;missile_retarget_range;end
+# Lasers;;;;;;;;;;;;;;;;;;;;;;;;
+TEST_RED_LASER;10.00;-5.00;6.00;16.00;1.25;0.50;0.00;1.50;0.00;5.00;20.00;30.00;40.00;0.90;0.50;0.00;1.00;0.00;0.00;0.00;0.00;0.00;0.00;
