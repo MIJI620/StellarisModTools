@@ -1,0 +1,123 @@
+{
+ "exclude_keys": {
+  "weight": [
+   1
+  ],
+  "ai_weight": [
+   1
+  ],
+  "ai_chance": [
+   1
+  ],
+  "random_list": [
+   2
+  ],
+  "weights": [
+   1
+  ],
+  "subject_weight": [
+   1
+  ],
+  "overlord_weight": [
+   1
+  ],
+  "strategy_weight": [
+   1
+  ],
+  "network_weight": [
+   1
+  ],
+  "event_weight": [
+   1
+  ],
+  "custom_storm_ai_weight": [
+   1
+  ],
+  "drop_weight": [
+   1
+  ],
+  "random_weight": [
+   1
+  ],
+  "leader_background_job_weight": [
+   1
+  ],
+  "ai_hiring_weight": [
+   1
+  ],
+  "ship_selection_weight": [
+   1
+  ],
+  "selectable_weight": [
+   1
+  ],
+  "country_attraction": [
+   1
+  ],
+  "cost": [
+   1
+  ],
+  "resource_max": [
+   1
+  ],
+  "resource_min": [
+   1
+  ],
+  "weight_modifier": [
+   1
+  ],
+  "monthly_progress": [
+   1
+  ],
+  "tradition_swap": [
+   1
+  ],
+  "desired_min": [
+   1
+  ],
+  "desired_max": [
+   1
+  ],
+  "mean_time_to_happen": [
+   1
+  ],
+  "is_difficulty": [
+   1
+  ],
+  "ai_acceptance": [
+   1
+  ],
+  "weight_multiplier": [
+   1
+  ],
+  "AI_wait_days": [
+   1
+  ]
+ },
+ "exclude_keywords": [
+  "$"
+ ],
+ "exclude_exact": [
+  "always",
+  "add",
+  "mult",
+  "weight",
+  "mode",
+  "trigger_scope",
+  "trigger",
+  "base",
+  "factor",
+  "set",
+  "weight_modifier",
+  "days",
+  "min",
+  "max",
+  "icon_frame",
+  "subtract",
+  "important"
+ ],
+ "exclude_values": [
+  "yes",
+  "no"
+ ]
+}

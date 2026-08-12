@@ -10,6 +10,7 @@
 	<ItemGroup>
 		<ProjectReference Include="..\Stellaris.Parser\Stellaris.Parser.csproj" />
 		<ProjectReference Include="..\Stellaris.Engine\Stellaris.Engine.csproj" />
+		<ProjectReference Include="..\Stellaris.Extension\Stellaris.Extension.csproj" />
 	</ItemGroup>
 
 	<ItemGroup>

@@ -48,6 +48,7 @@ public sealed class SpriteManagementEngine : IDisposable
     private void BuildIndex()
     {
         _spriteIndex.Clear();
+        _gfxDdsFiles = null;   // gfx/ 目录 .dds 列表缓存失效（重建索引时重扫）
         _logger.LogInformation("开始构建子图形内存索引...");
 
         var gfxFiles = _adapter.GetFilesRecursive("", "*.gfx");
@@ -118,6 +119,36 @@ public sealed class SpriteManagementEngine : IDisposable
     }
 
     // ===== 查询接口 =====
+    private List<string>? _gfxDdsFiles;   // gfx/ 目录全部 .dds 相对路径（懒扫缓存；"只需要一个目录"=gfx/，用户 2026-08）
+
+    /// <summary>gfx/ 目录递归扫描的全部 .dds 相对路径（只记 .dds 后缀，其他一律不管——用户 2026-08；
+    /// 经 SA 磁盘扫描——.dds 是二进制贴图不在 _fileIndex 配置索引）。
+    /// 供"图形"可视化列表：未引用文件条目 = 本列表 − 全部 spriteType.texturefile 引用。</summary>
+    public IReadOnlyList<string> GetGfxDdsFiles()
+    {
+        lock (_syncLock)
+        {
+            if (_gfxDdsFiles == null)
+                _gfxDdsFiles = _adapter.GetBinaryFilesRecursive("gfx", "*.dds")
+                    .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            return _gfxDdsFiles;
+        }
+    }
+
+    /// <summary>全部 spriteType 的 texturefile 引用集合（无视大小写——判断 .dds 是否被注册键引用）。</summary>
+    public IReadOnlySet<string> GetReferencedTextureFiles()
+    {
+        lock (_syncLock)
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var def in _spriteIndex.Values)
+                if (!string.IsNullOrEmpty(def.TextureFile))
+                    set.Add(def.TextureFile);
+            return set;
+        }
+    }
+
     public SpriteDefinition? GetSpriteDefinition(string name)
     {
         lock (_syncLock)
@@ -263,8 +294,8 @@ public sealed class SpriteManagementEngine : IDisposable
 
                 // 3. 新增流程
                 var filteredChildren = FilterAdditionalChildren(additionalChildren);
-                var parentPath = new List<object> { "spriteTypes" };
-                var targetPath = new List<object> { "spriteTypes", ("name", name) };
+                var parentPath = SpriteTypesPath();
+                var targetPath = SpriteTypePath(name);
 
                 // 3a. 创建带 name 标识的 spriteType Block——3b 用 ("name", name) 定位
                 //     时才能命中（空块无 name 会定位失败，导致新建文件无法添加精灵）。
@@ -287,7 +318,7 @@ public sealed class SpriteManagementEngine : IDisposable
                         if (node.Type == NodeType.Simple && !string.IsNullOrEmpty(node.Key) && node.Value != null)
                         {
                             // 追加到目标路径下的该 Key
-                            var fieldPath = targetPath.Concat(new object[] { node.Key }).ToList();
+                            var fieldPath = SpriteFieldAddPath(targetPath, node.Key!);
                             _adapter.AddConfigNode(normalizedPath, fieldPath, node);
                         }
                         else if (node.Type == NodeType.Block || node.Type == NodeType.List)
@@ -361,7 +392,7 @@ public sealed class SpriteManagementEngine : IDisposable
                 }
 
                 var existingDef = _spriteIndex[name];
-                var targetPath = new List<object> { "spriteTypes", ("name", name) };
+                var targetPath = SpriteTypePath(name);
                 var filteredChildren = FilterAdditionalChildren(additionalChildren);
 
                 if (fullOverwrite)
@@ -374,7 +405,7 @@ public sealed class SpriteManagementEngine : IDisposable
                     // 之前空块无 name 导致"父路径定位失败"：旧块已删、新块残缺 → 保存写回丢精灵）
                     var newBlock = BuildBlockNode("spriteType", new List<AstNode>());
                     newBlock.Children.Add(BuildSimpleNode("name", name, isQuoted: true));
-                    _adapter.AddConfigNode(normalizedPath, new List<object> { "spriteTypes" }, newBlock,
+                    _adapter.AddConfigNode(normalizedPath, SpriteTypesPath(), newBlock,
                         existingPredicate: SpriteByName(name));
 
                     // 重新添加标准字段
@@ -393,7 +424,7 @@ public sealed class SpriteManagementEngine : IDisposable
                         {
                             if (node.Type == NodeType.Simple && !string.IsNullOrEmpty(node.Key) && node.Value != null)
                             {
-                                var fieldPath = targetPath.Concat(new object[] { node.Key }).ToList();
+                                var fieldPath = SpriteFieldAddPath(targetPath, node.Key!);
                                 _adapter.AddConfigNode(normalizedPath, fieldPath, node);
                             }
                             else if (node.Type == NodeType.Block || node.Type == NodeType.List)
@@ -408,20 +439,20 @@ public sealed class SpriteManagementEngine : IDisposable
                     // 增量合并
                     if (newTextureFile != null)
                     {
-                        var texPath = targetPath.Concat(new object[] { "texturefile" }).ToList();
+                        var texPath = SpriteFieldAddPath(targetPath, "texturefile");
                         _adapter.UpdateConfigNode(normalizedPath, texPath,
                             BuildSimpleNode("texturefile", newTextureFile, isQuoted: true), fullReplace: false);
                     }
 
                     if (newNoOfFrames.HasValue)
                     {
-                        var framesPath = targetPath.Concat(new object[] { "noOfFrames" }).ToList();
+                        var framesPath = SpriteFieldAddPath(targetPath, "noOfFrames");
                         _adapter.UpdateConfigNode(normalizedPath, framesPath,
                             BuildSimpleNode("noOfFrames", newNoOfFrames.Value), fullReplace: false);
                     }
                     else if (newNoOfFrames == null)
                     {
-                        var framesPath = targetPath.Concat(new object[] { "noOfFrames" }).ToList();
+                        var framesPath = SpriteFieldAddPath(targetPath, "noOfFrames");
                         _adapter.RemoveConfigNode(normalizedPath, framesPath);
                     }
 
@@ -434,7 +465,7 @@ public sealed class SpriteManagementEngine : IDisposable
                             {
                                 if (node.Value != null)
                                 {
-                                    var fieldPath = targetPath.Concat(new object[] { node.Key }).ToList();
+                                    var fieldPath = SpriteFieldAddPath(targetPath, node.Key!);
                                     _adapter.UpdateConfigNode(normalizedPath, fieldPath, node, fullReplace: false);
                                 }
                             }
@@ -493,7 +524,7 @@ public sealed class SpriteManagementEngine : IDisposable
                 }
 
                 string normalizedPath = NormalizeGfxPath(gfxPath);
-                var targetPath = new List<object> { "spriteTypes", ("name", name) };
+                var targetPath = SpriteTypePath(name);
 
                 _adapter.RemoveConfigNode(normalizedPath, targetPath);
 
@@ -660,8 +691,7 @@ public sealed class SpriteManagementEngine : IDisposable
         return filtered.Count > 0 ? filtered : null;
     }
 
-    private AstNode BuildSimpleNode(string key, object value, bool isQuoted = false)
-    {
+    private AstNode BuildSimpleNode(string key, object value, bool isQuoted = false)    {
         return new AstNode
         {
             Type = NodeType.Simple,
@@ -681,6 +711,51 @@ public sealed class SpriteManagementEngine : IDisposable
             Children = children,
             OriginalLayout = OriginalLayout.MultiLine
         };
+    }
+
+    // ==================== 标准选择路径（SelectorResolver 新规范） ====================
+
+    private static Dictionary<string, object> Sel(string mode, List<object> rule, string checkRule = "And")
+        => new() { ["mode"] = mode, ["match"] = new Dictionary<string, object> { ["rule"] = rule, ["check_rule"] = checkRule } };
+
+    private static Dictionary<string, object> KeyLeaf(string k)
+        => new() { ["target"] = "key", ["keywords"] = new List<object> { k } };
+
+    private static Dictionary<string, object> ValueLeaf(string v)
+        => new() { ["target"] = "value", ["keywords"] = new List<object> { v } };
+
+    /// <summary>spriteTypes 块定位：{mode:Block, match:[key=spriteTypes]}</summary>
+    private static List<object> SpriteTypesPath()
+        => new() { Sel("Block", new List<object> { KeyLeaf("spriteTypes") }) };
+
+    /// <summary>spriteType 块定位（含 name=name 字段）：spriteTypes → 子层 Block 含 Simple(name=name)</summary>
+    private static List<object> SpriteTypePath(string name)
+        => new()
+        {
+            Sel("Block", new List<object> { KeyLeaf("spriteTypes") }),
+            Sel("Block", new List<object>
+            {
+                Sel("Simple", new List<object> { KeyLeaf("name"), ValueLeaf(name) })
+            })
+        };
+
+    /// <summary>spriteType 块下的 Simple 字段定位（更新字段值用）：SpriteTypePath + [Simple key=field]</summary>
+    private static List<object> SpriteFieldPath(string name, string field)
+        => new()
+        {
+            Sel("Block", new List<object> { KeyLeaf("spriteTypes") }),
+            Sel("Block", new List<object>
+            {
+                Sel("Simple", new List<object> { KeyLeaf("name"), ValueLeaf(name) })
+            }),
+            Sel("Simple", new List<object> { KeyLeaf(field) })
+        };
+
+    /// <summary>spriteType 块下追加字段定位：SpriteTypePath + [Simple key=field]（Add 场景）</summary>
+    private static List<object> SpriteFieldAddPath(List<object> targetPath, string field)
+    {
+        var p = new List<object>(targetPath) { Sel("Simple", new List<object> { KeyLeaf(field) }) };
+        return p;
     }
 
     private SpriteDefinition? ParseSpriteDefinition(AstNode node, string sourceFile, string? sourceRoot = null)
@@ -915,9 +990,9 @@ public sealed class SpriteManagementEngine : IDisposable
                         block.Children.Add(c);
                 }
 
-                _adapter.AddConfigNode(targetGfxPath, new List<object> { "spriteTypes" }, block,
+                _adapter.AddConfigNode(targetGfxPath, SpriteTypesPath(), block,
                     existingPredicate: SpriteByName(def.Name));
-                _adapter.RemoveConfigNode(def.SourceFile, new List<object> { "spriteTypes", ("name", def.Name) });
+                _adapter.RemoveConfigNode(def.SourceFile, SpriteTypePath(def.Name));
                 _spriteIndex[def.Name] = new SpriteDefinition(
                     def.Name, def.TextureFile, def.NoOfFrames, targetGfxPath, def.AdditionalChildren, modRoot);
                 _logger.LogInformation("精灵迁移: {Name} {From} -> {To}", def.Name, def.SourceFile, targetGfxPath);

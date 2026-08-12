@@ -6,6 +6,14 @@ using Microsoft.Extensions.Logging;
 
 namespace Stellaris.Parser
 {
+    /// <summary>AddConfigNode 插入位置：Append（缺省——父节点 children 末尾）| Before/After（目标节点同层前/后）。</summary>
+    public enum AddPosition
+    {
+        Append,
+        Before,
+        After
+    }
+
     public partial class StellarisAdapter
     {
         // ==================== 16.3 创建空内存文件 ====================
@@ -70,13 +78,33 @@ namespace Stellaris.Parser
         // ==================== 16.4 配置文件内存操作接口 ====================
 
         /// <summary>
+        /// **正向**节点查询（与 FindStringValues 的**反向**"值 → 位置"相对）：按标准选择路径从指定文件
+        /// 选择节点，返回 SelectResult（Hits + Errors 内存告知——不抛异常）。
+        /// 标准选择路径见 SelectorResolver 规范：路径 = 枝序列（逐层推进不跳层），枝 = mode 必填 +
+        /// match.rule 数组（check_rule 组合）/ index 抽取（1 起，越界记错误）。
+        /// </summary>
+        public SelectResult SelectNodes(string relativePath, List<object> path)
+        {
+            lock (_stateLock)
+            {
+                string normPath = NormalizePath(relativePath);
+                if (!_configResults.TryGetValue(normPath, out var result))
+                    return new SelectResult();
+                return SelectorResolver.Resolve(result.RootNodes, path);
+            }
+        }
+
+        /// <summary>
         /// 在指定文件的 AST 中，于父路径下添加一个完整的 AST 节点。
         /// existingPredicate（可选）：自定义"已存在判定"——父节点下第一个满足谓词的节点
         /// 视为已存在（转更新/替换）；无则添加。默认 null = 按 Key 同名（Block 场景可传
         /// "第一层子节点含指定 Simple/List" 的谓词，如 spriteType 按 name 字段定位）。
+        /// position（可选）：Append（缺省）——parentPath 定位**父节点**，新节点追加到 children
+        /// 末尾；Before/After——parentPath 定位**目标节点本身**（list/simple/block），新节点插入到
+        /// 目标同层前/后（相对定位；目标不存在 → 静默返回；多个 → 抛异常）。
         /// </summary>
         public void AddConfigNode(string relativePath, List<object> parentPath, AstNode newNode,
-            Func<AstNode, bool>? existingPredicate = null)
+            Func<AstNode, bool>? existingPredicate = null, AddPosition position = AddPosition.Append)
         {
             if (string.IsNullOrEmpty(relativePath))
                 throw new ArgumentNullException(nameof(relativePath));
@@ -91,7 +119,45 @@ namespace Stellaris.Parser
                 EnsureConfigFileExists(normPath);
 
                 var result = _configResults[normPath];
-                var parentNodes = ResolvePath(result, parentPath, autoCreateBlocks: true);
+
+                // 相对定位（Before/After）：parentPath 定位目标节点本身，插到它同层前/后
+                if (position != AddPosition.Append)
+                {
+                    var targetResolve = SelectorResolver.Resolve(result.RootNodes, parentPath, autoCreateBlocks: false);
+                    if (targetResolve.HasErrors)
+                        foreach (var err in targetResolve.Errors) _logger.LogWarning("AddConfigNode 定位提示: {Msg}", err.Message);
+                    var targets = targetResolve.Hits;
+                    if (targets.Count == 0)
+                    {
+                        _logger.LogDebug("AddConfigNode[{Position}]: 目标不存在，静默返回", position);
+                        return;
+                    }
+                    if (targets.Count > 1)
+                        throw new InvalidOperationException($"相对定位到多个目标节点({targets.Count}): {string.Join(" -> ", parentPath)} 目标: {string.Join(",", targets.Select(t => t.Key + "=" + (t.Value?.ToString() ?? t.Type.ToString())))}");
+                    var target = targets.First();
+                    var targetParent = FindParentContaining(result.RootNodes, target);
+                    // 顶层节点（无父）→ 父 = 文件根列表（RootNodes）——同样可相对插入
+                    var parentList = targetParent != null ? targetParent.Children : result.RootNodes;
+                    if (parentList.Count == 0)
+                    {
+                        _logger.LogDebug("AddConfigNode[{Position}]: 目标无父层（顶层），静默返回", position);
+                        return;
+                    }
+                    int index = parentList.IndexOf(target);
+                    if (index == -1)
+                        return;
+                    var clone = CloneNode(newNode);
+                    parentList.Insert(position == AddPosition.Before ? index : index + 1, clone);
+                    UpdateConstantIndexForNode(null, clone);
+                    _logger.LogDebug("添加配置节点[{Position}]: {Path} -> {Key}（目标: {TargetKey}）",
+                        position, normPath, newNode.Key ?? "<无Key>", target.Key ?? "<无Key>");
+                    return;
+                }
+
+                var resolveResult = SelectorResolver.Resolve(result.RootNodes, parentPath, autoCreateBlocks: true);
+                if (resolveResult.HasErrors)
+                    foreach (var err in resolveResult.Errors) _logger.LogWarning("AddConfigNode 定位提示: {Msg}", err.Message);
+                var parentNodes = resolveResult.Hits;
                 if (parentNodes.Count == 0)
                     throw new InvalidOperationException($"父路径定位失败: {string.Join(" -> ", parentPath)}");
 
@@ -138,7 +204,21 @@ namespace Stellaris.Parser
                     }
 
                     _logger.LogDebug("AddConfigNode: 节点已存在，自动转为更新: {Key}", newNode.Key);
-                    UpdateConfigNode(relativePath, parentPath.Concat(new object[] { newNode.Key! }).ToList(), newNode, fullReplace: true);
+                    // 标准搜索追加段（新规范）：定位 parent 下同 Key 的 Simple/Block 字段
+                    var appendSelector = new Dictionary<string, object>
+                    {
+                        ["mode"] = newNode.Type == NodeType.Simple ? "Simple" : "Block",
+                        ["match"] = new Dictionary<string, object>
+                        {
+                            ["rule"] = new List<object>
+                            {
+                                new Dictionary<string, object> { ["target"] = "key", ["keywords"] = new List<object> { newNode.Key! } }
+                            }
+                        }
+                    };
+                    UpdateConfigNode(relativePath,
+                        parentPath.Concat(new object[] { appendSelector }).ToList(),
+                        newNode, fullReplace: true);
                     return;
                 }
 
@@ -166,7 +246,10 @@ namespace Stellaris.Parser
                 if (!_configResults.TryGetValue(normPath, out var result))
                     return;
 
-                var nodes = ResolvePath(result, targetPath, autoCreateBlocks: false);
+                var resolveResult = SelectorResolver.Resolve(result.RootNodes, targetPath);
+                if (resolveResult.HasErrors)
+                    foreach (var err in resolveResult.Errors) _logger.LogWarning("定位提示: {Msg}", err.Message);
+                var nodes = resolveResult.Hits;
                 if (nodes.Count == 0)
                     return;
 
@@ -184,6 +267,47 @@ namespace Stellaris.Parser
                     UpdateConstantIndexForNode(target, null);
                     _logger.LogDebug("删除配置节点: {Path} -> {Key}", normPath, target.Key ?? "无Key");
                 }
+            }
+        }
+
+        /// <summary>
+        /// 重命名标准选择路径定位到的节点的 Key（Simple/Block/List 均可）。
+        /// Key 与值（Value/RawText）独立——RawText 只记录值的原始文本（不含 Key），改名不影响值，
+        /// 故 RawText 保留。无 Key 索引依赖（常量/本地化索引按值/路径，改名安全）。
+        /// 定位到多个节点抛异常；定位不到静默返回（记日志）。
+        /// </summary>
+        public void RenameKey(string relativePath, List<object> targetPath, string newKey)
+        {
+            if (string.IsNullOrEmpty(relativePath))
+                throw new ArgumentNullException(nameof(relativePath));
+            if (targetPath == null)
+                throw new ArgumentNullException(nameof(targetPath));
+            if (string.IsNullOrEmpty(newKey))
+                throw new ArgumentNullException(nameof(newKey));
+
+            lock (_stateLock)
+            {
+                string normPath = NormalizePath(relativePath);
+                if (!_configResults.TryGetValue(normPath, out var result))
+                    return;
+
+                var resolveResult = SelectorResolver.Resolve(result.RootNodes, targetPath);
+                if (resolveResult.HasErrors)
+                    foreach (var err in resolveResult.Errors) _logger.LogWarning("定位提示: {Msg}", err.Message);
+                var nodes = resolveResult.Hits;
+                if (nodes.Count == 0)
+                {
+                    _logger.LogDebug("RenameKey: 目标不存在，静默返回: {Path}", string.Join(" -> ", targetPath));
+                    return;
+                }
+                if (nodes.Count > 1)
+                    throw new InvalidOperationException($"目标路径定位到多个节点，无法重命名: {string.Join(" -> ", targetPath)}");
+
+                var target = nodes.First();
+                string? oldKey = target.Key;
+                target.Key = newKey;
+                // 值不变 → Value/RawText 均保留（序列化输出 {新Key} = {RawText ?? 由Value生成}）
+                _logger.LogDebug("重命名节点: {Path} -> {Old} → {New}", normPath, oldKey ?? "<无Key>", newKey);
             }
         }
 
@@ -211,7 +335,10 @@ namespace Stellaris.Parser
                 EnsureConfigFileExists(normPath);
 
                 var result = _configResults[normPath];
-                var nodes = ResolvePath(result, targetPath, autoCreateBlocks: false);
+                var resolveResult = SelectorResolver.Resolve(result.RootNodes, targetPath);
+                if (resolveResult.HasErrors)
+                    foreach (var err in resolveResult.Errors) _logger.LogWarning("定位提示: {Msg}", err.Message);
+                var nodes = resolveResult.Hits;
 
                 // 目标定位：targetPredicate 提供时取第一个满足谓词的节点
                 AstNode? target = null;
@@ -245,13 +372,16 @@ namespace Stellaris.Parser
                 if (fullReplace)
                 {
                     var parentPath = targetPath.Take(targetPath.Count - 1).ToList();
-                    var parents = ResolvePath(result, parentPath, autoCreateBlocks: false);
+                    var parentsResolve = SelectorResolver.Resolve(result.RootNodes, parentPath);
+                if (parentsResolve.HasErrors)
+                    foreach (var err in parentsResolve.Errors) _logger.LogWarning("UpdateConfigNode 父定位提示: {Msg}", err.Message);
+                var parents = parentsResolve.Hits;
                     if (parents.Count == 0)
                         throw new InvalidOperationException("父节点不存在");
                     var parent = parents.First();
                     int index = parent.Children.IndexOf(target);
                     if (index == -1)
-                        throw new InvalidOperationException("目标节点不在父节点列表中（内部错误）");
+                        throw new InvalidOperationException($"目标节点不在父节点列表中（内部错误）: parent={parent.Key ?? "<无Key>"} target={target.Key ?? "<无Key>"} type={target.Type}");
                     var clone = CloneNode(newNode);
                     parent.Children[index] = clone;
                     UpdateConstantIndexForNode(target, clone);
@@ -591,7 +721,7 @@ namespace Stellaris.Parser
             return _roots.IndexOf(root);
         }
 
-        private AstNode CloneNode(AstNode node)
+        public AstNode CloneNode(AstNode node)
         {
             if (node == null) throw new ArgumentNullException(nameof(node));
             var clone = new AstNode
@@ -633,13 +763,22 @@ namespace Stellaris.Parser
             return null;
         }
 
+        [Obsolete("已放弃：宽匹配半成品——请用 SelectorResolver（标准搜索）")]
         private List<AstNode> ResolvePath(ParserResult result, List<object> path, bool autoCreateBlocks)
-        {
-            if (result == null) throw new ArgumentNullException(nameof(result));
-            if (path == null || path.Count == 0)
-                return result.RootNodes.ToList();
+            => ResolveNodes(result.RootNodes, path, autoCreateBlocks);
 
-            var currentNodes = result.RootNodes.ToList();
+        /// <summary>
+        [Obsolete("已放弃：宽匹配半成品——请用 SelectorResolver（标准搜索）")]
+        /// 路径选择器解析核心（仅旧 ResolvePath 用——已放弃）：
+        /// 选择器类型——string（Key 宽匹配，自身/子节点都收）、(string,object) 元组（字段=值条件）、
+        /// int（当前列表第几个）、字典（**条件式查询**：mode/match/index——见 SelectNodes 文档）。
+        /// </summary>
+        private List<AstNode> ResolveNodes(List<AstNode> roots, List<object> path, bool autoCreateBlocks)
+        {
+            if (path == null || path.Count == 0)
+                return roots.ToList();
+
+            var currentNodes = roots.ToList();
 
             foreach (var selector in path)
             {
@@ -662,7 +801,7 @@ namespace Stellaris.Parser
                     }
                     if (matched.Count == 0 && autoCreateBlocks)
                     {
-                        AstNode parent = currentNodes.LastOrDefault() ?? result.RootNodes.LastOrDefault();
+                        AstNode parent = currentNodes.LastOrDefault() ?? roots.LastOrDefault();
                         if (parent == null)
                         {
                             var newBlock = new AstNode
@@ -672,7 +811,7 @@ namespace Stellaris.Parser
                                 Children = new List<AstNode>(),
                                 OriginalLayout = OriginalLayout.MultiLine
                             };
-                            result.RootNodes.Add(newBlock);
+                            roots.Add(newBlock);
                             matched.Add(newBlock);
                         }
                         else
@@ -725,6 +864,11 @@ namespace Stellaris.Parser
                     else
                         currentNodes = new List<AstNode>();
                 }
+                else if (selector is IDictionary<string, object> dictSelector)
+                {
+                    // 字典选择器属新标准（SelectorResolver）——旧宽匹配不支持
+                    throw new ArgumentException("字典选择器请用 SelectorResolver（标准搜索）");
+                }
                 else
                 {
                     throw new ArgumentException($"不支持的路径选择器类型: {selector.GetType()}");
@@ -736,5 +880,7 @@ namespace Stellaris.Parser
 
             return currentNodes;
         }
+
+
     }
 }

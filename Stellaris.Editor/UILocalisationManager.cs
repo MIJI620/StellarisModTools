@@ -43,6 +43,24 @@ public sealed class UILocalisationManager
 
     public string CurrentLanguage => _currentLanguage;
 
+    /// <summary>UI 语言代码 → 群星 mod 本地化语言代码（如 zh-CN → simp_chinese）。
+    /// 供引擎/页面查询 mod 本地化文本时映射（星系样式/科技图等共用）。</summary>
+    public static string MapUiLangToModLang(string uiLang) => uiLang.ToLowerInvariant() switch
+    {
+        "zh-cn" or "zh-hans" or "zh" => "simp_chinese",
+        "zh-tw" or "zh-hant" => "trad_chinese",
+        "en" or "en-us" => "english",
+        "ja" or "ja-jp" => "japanese",
+        "ko" or "ko-kr" => "korean",
+        "fr" or "fr-fr" => "french",
+        "de" or "de-de" => "german",
+        "es" or "es-es" => "spanish",
+        "ru" or "ru-ru" => "russian",
+        "pt" or "pt-br" => "braz_por",
+        "pl" or "pl-pl" => "polish",
+        _ => uiLang.ToLowerInvariant()
+    };
+
     public IReadOnlyCollection<string> AvailableLanguages
         => _tables.Keys.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList().AsReadOnly();
 

@@ -163,6 +163,27 @@ public sealed class EdgeCaseTests
     // ==================== 序列化往返 ====================
 
     [Test]
+    public void RootSeparatorRule_UserDefined()
+    {
+        // 用户定义（2026-08）：根节点之间只有"2 个不同类型节点"或"2 个 Block"才空一行；
+        // 相同类型（如两个 Simple @变量）紧挨一行。
+        var source = "@a = 2\n@b = 3\nc = {}\n";
+        var lexer = new Lexer(source);
+        var tokens = new List<Token>();
+        Token tok;
+        while ((tok = lexer.NextToken()).Type != TokenType.Eof)
+            tokens.Add(tok);
+        var parser = new StellarisParser(tokens, source.Split('\n'), null, source);
+        var roots = parser.Parse().RootNodes;
+
+        var ser = SerializationHelper.Serialize(roots);
+        ser = ser.Replace("\r", "");   // Windows AppendLine 输出 \r\n——断言用 \n 归一
+        // @a/@b 同 Simple → 紧挨；@b → c={} 不同类型 → 空一行
+        Assert.True(ser.Contains("@a = 2\n@b = 3\n\nc = {", StringComparison.Ordinal), "Simple→Block 空一行：" + ser.Replace("\n", "|"));
+        Assert.False(ser.Contains("@a = 2\n\n@b = 3", StringComparison.Ordinal), "Simple-Simple 紧挨");
+    }
+
+    [Test]
     public void UserSample_RoundTripPreservesContent()
     {
         var result = ParseSample();

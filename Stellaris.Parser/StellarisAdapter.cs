@@ -72,6 +72,9 @@ namespace Stellaris.Parser
         private readonly List<string> _roots = new();
         private readonly Dictionary<string, ParserResult> _configResults = new();
         private readonly Dictionary<string, string> _configRoots = new();
+        /// <summary>相对路径撞击表：relPath → 各 root 的 (root, 绝对路径)。
+        /// 仅记录**多个 root 撞同一个相对路径**的情况；常规扫描仍按覆盖规则合并（本表与常规隔离）。</summary>
+        private readonly Dictionary<string, List<(string Root, string FullPath)>> _pathCollisions = new(StringComparer.OrdinalIgnoreCase);
 
         // 本地化存储：按语言分块，每个条目包含 Value、CurrentPath、OldPath、Root
         // 符合规范 1.6-d 和 16.5
@@ -139,14 +142,25 @@ namespace Stellaris.Parser
             _logger = logger ?? NullLogger.Instance;
         }
 
+        /// <summary>添加 root（抗爆炸）：路径不存在 → 日志警告并跳过（不抛异常、不加入——避免扫描时爆炸）。</summary>
         public void AddRoot(string root)
         {
-            if (!Directory.Exists(root))
-                throw new DirectoryNotFoundException($"Root not found: {root}");
+            if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
+            {
+                _logger.LogWarning("跳过不存在的 root 路径: {Root}", root);
+                return;
+            }
             _roots.Add(root);
         }
 
         public IReadOnlyList<string> Roots => _roots.AsReadOnly();
+
+        /// <summary>覆盖规则读取器（解析层应用：只读一次 → 最早 root 生效）。null = 不应用规则。</summary>
+        public Rules.RulesReader? Rules { get; set; }
+
+        /// <summary>标记为"游戏"的 root（绝对路径——全局唯一）。只读一次规则跳过它（不算最早，
+        /// 优先读它之后的 root；若之后无其他 root 的同名文件则回退到它）。null = 未标记。</summary>
+        public string? GameRoot { get; set; }
 
         /// <summary>返回文件（相对路径）所属的根目录；未收录返回 null。</summary>
         public string? GetFileRoot(string relPath)
@@ -160,6 +174,7 @@ namespace Stellaris.Parser
         {
             _configResults.Clear();
             _configRoots.Clear();
+            _pathCollisions.Clear();
             _localisationTable.Clear();
             _localisationFiles.Clear();
             _csvCache.Clear();
@@ -306,7 +321,37 @@ namespace Stellaris.Parser
             return result.AsReadOnly();
         }
 
-        // ========== 对外查询接口 ==========
+        /// <summary>
+        /// 直接从磁盘递归扫描指定相对目录下的二进制/未被解析文件（如 gfx/ 下的 .dds 贴图——不在 _fileIndex）。
+        /// 遍历全部 roots，相对路径按覆盖规则去重；"只需要一个目录"（如 gfx/）。供图形可视化索引（用户 2026-08）。
+        /// </summary>
+        public IReadOnlyList<string> GetBinaryFilesRecursive(string relativeDirectory, string searchPattern)
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string normDir = NormalizePath(relativeDirectory);
+            foreach (var root in _roots)
+            {
+                if (string.IsNullOrEmpty(root))
+                    continue;
+                string dir = Path.Combine(root, normDir.Replace('/', Path.DirectorySeparatorChar));
+                if (!Directory.Exists(dir))
+                    continue;
+                try
+                {
+                    foreach (var f in Directory.GetFiles(dir, searchPattern, SearchOption.AllDirectories))
+                    {
+                        string rel = Path.GetRelativePath(root, f).Replace('\\', '/');
+                        if (rel.Length > 0 && !rel.StartsWith("../", StringComparison.Ordinal))
+                            set.Add(rel);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "磁盘扫描失败: {Dir}", dir);
+                }
+            }
+            return set.OrderBy(p => p, StringComparer.OrdinalIgnoreCase).ToList();
+        }
         /// <summary>
         /// 获取指定语言的本地化文本。
         /// 从 _localisationTable 中按 key 查询。
@@ -370,6 +415,14 @@ namespace Stellaris.Parser
                 .OrderBy(f => f, StringComparer.Ordinal)
                 .ToList();
         }
+
+        /// <summary>已加载本地化的全部语种（从 lang\0path 前缀提取，去重排序）。</summary>
+        public IReadOnlyList<string> GetLocalisationLanguages()
+            => _localisationFiles
+                .Select(f => f.Substring(0, f.IndexOf('\0')))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.Ordinal)
+                .ToList();
 
         /// <summary>
         /// 指定语言下所有本地化键 → 当前所在文件路径（CurrentPath）的一次性索引。
@@ -500,11 +553,91 @@ namespace Stellaris.Parser
 
         public IReadOnlyDictionary<string, ParserResult> GetAllConfigs() => _configResults;
 
-        /// <summary>全 AST 字符串值反查询：value 作为字符串值在任一已加载文件（含递归子节点）中出现的所有位置。
-        /// 返回列表：**第 1 位是出现次数（int）**，后续每位是位置 (string 文件相对路径, List&lt;object&gt; targetPath)。
-        /// targetPath 与 RemoveConfigNode/UpdateConfigNode 的 targetPath 同格式（中间层用 Key、无 Key 用索引、
-        /// **目标叶用父下索引**——CRUD 元组是块语义会 Resolve 到父块，叶节点必须用索引精确定位）。
-        /// 调用方多数时候只需读第 1 位（次数）；需要基于 AST 位置操作时再扫后面。</summary>
+        /// <summary>相对路径撞击表（只读）：relPath → 所有 root 的 (root, 绝对路径)（>1 个 root 才记录）。</summary>
+        public IReadOnlyDictionary<string, List<(string Root, string FullPath)>> PathCollisions => _pathCollisions;
+
+        /// <summary>
+        /// 撞击扫描（特殊接口，与常规隔离）：指定相对路径 → 每个 root 各自**独立解析**的 AST（不合并）。
+        /// 常规 _configResults 只保留一个 root（按覆盖规则）；本接口每个 root 都解析、都返回，
+        /// 且不写入任何内部状态——供资源/本地化等"需要看全部同名文件"的适配使用。
+        /// </summary>
+        public IReadOnlyList<(string Root, string FullPath, ParserResult Ast)> GetCollisionAsts(string relativePath)
+        {
+            var norm = NormalizePath(relativePath);
+            var result = new List<(string, string, ParserResult)>();
+            if (!_pathCollisions.TryGetValue(norm, out var entries))
+                return result;
+            foreach (var (root, fullPath) in entries)
+            {
+                try
+                {
+                    result.Add((root, fullPath, ParseConfigFile(fullPath)));
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "撞击扫描解析失败: {FullPath}", fullPath);
+                }
+            }
+            return result;
+        }
+
+        /// <summary>解析单个配置文件（Lexer + Parser——供常规扫描与撞击扫描共用）。</summary>
+        private ParserResult ParseConfigFile(string fullPath)
+        {
+            var content = File.ReadAllText(fullPath);
+            var lines = File.ReadAllLines(fullPath);
+            var lexer = new Lexer(content);
+            var tokens = new List<Token>();
+            Token tok;
+            while ((tok = lexer.NextToken()).Type != TokenType.Eof)
+                tokens.Add(tok);
+            var parser = new Parser(tokens, lines, fullPath, content);
+            return parser.Parse();
+        }
+
+        // ================================================================
+        // SA 基础服务：文本 ↔ AST 节点统一转换（各引擎统一调用，禁止自行 new Lexer/Parser 或自行拼文本）
+        // ================================================================
+
+        /// <summary>解析单条 "key = 值" / "key = { ... }" 文本 → 单节点（Simple/Block/List）。
+        /// 各引擎"字段原文 → AST 节点"统一经此（法令/科技/战略资源共用——2026-08 曾各自重复实现）；
+        /// 调用方自行校验节点 Key。解析失败返回 null。</summary>
+        public AstNode? ParseSingleNode(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                return null;
+            try
+            {
+                var lexer = new Lexer(text);
+                var tokens = new List<Token>();
+                Token tok;
+                while ((tok = lexer.NextToken()).Type != TokenType.Eof)
+                    tokens.Add(tok);
+                var parser = new Parser(tokens, new[] { text }, "adapter_text", text);
+                var nodes = parser.Parse().RootNodes;
+                return nodes.Count == 1 ? nodes[0] : null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>节点列表 → 文本（**完整递归序列化**：嵌套块/注释/格式全保留）。
+        /// 各引擎"块 → 文本"统一经此（禁止自行拼文本/简写嵌套块——科技 BlockToText 曾因简写丢内容，2026-08）。</summary>
+        public string SerializeNodes(IReadOnlyList<AstNode> nodes)
+        {
+            if (nodes == null || nodes.Count == 0)
+                return "";
+            return SerializationHelper.Serialize(nodes.ToList());
+        }
+
+        /// <summary>【反向搜索】全 AST 字符串值反查询：value 作为字符串值在任一已加载文件（含递归子节点）中出现的所有位置。
+        /// 返回列表：**第 1 位是出现次数（int）**，后续每位是位置 (string 文件相对路径, List&lt;object&gt; path)。
+        /// **path 为标准选择路径（新标准格式）**——每层 = 字典 { "mode": 节点类型, "index": 该类型在当前层的序次 }，
+        /// 可直接喂 SelectorResolver / SelectNodes / CRUD 增删改查（逐层语义，无歧义）。
+        /// 调用方多数时候只需读第 1 位（次数）；需要基于 AST 位置操作时再用 path。
+        /// 正向（条件 → 节点）查询用 SelectNodes。</summary>
         public List<object> FindStringValues(string value)
         {
             var result = new List<object> { 0 };
@@ -516,50 +649,37 @@ namespace Stellaris.Parser
 
             void WalkChildren(List<AstNode> nodes, List<object> path, string filePath)
             {
-                // Key 下钻 + int"同 Key 第几个"（永远补 int——不依赖 SA 判断哪些 Key 会重名）：
-                // 每层 = Key（string 下钻匹配，可能多个） + int（该 Key 出现序次，0 起，选第几个）。
-                // 与 ResolvePath 语义对齐：string 下钻 Children、int 当前列表第几个。
-                var keyCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+                // 每层按**类型**计数（该类型第几个）——与标准选择器 {mode, index} 对齐：
+                // 逐层语义下 {mode, index} 唯一化定位（过滤当前空间 + 抽第几个），可精确到任意节点。
+                var typeCounts = new Dictionary<string, int>(StringComparer.Ordinal);
                 for (int i = 0; i < nodes.Count; i++)
                 {
                     var n = nodes[i];
-                    string? key = n.Key;
-                    int kth = 0;
-                    if (!string.IsNullOrEmpty(key))
+                    string typeName = n.Type switch
                     {
-                        keyCounts.TryGetValue(key, out int c);
-                        kth = c;
-                        keyCounts[key] = c + 1;
-                    }
+                        NodeType.Block => "Block",
+                        NodeType.List => "List",
+                        _ => "Simple"
+                    };
+                    typeCounts.TryGetValue(typeName, out int c);
+                    int kth = c;
+                    typeCounts[typeName] = c + 1;
+                    var selector = new Dictionary<string, object>
+                    {
+                        ["mode"] = typeName,
+                        ["index"] = kth + 1   // 1 起（标准规范统一）
+                    };
 
                     if (n.Value is string sv && string.Equals(sv, value, StringComparison.Ordinal))
                     {
                         result[0] = (int)result[0] + 1;
-                        var target = new List<object>(path);
-                        if (!string.IsNullOrEmpty(key))
-                        {
-                            target.Add(key);
-                            target.Add(kth);
-                        }
-                        else
-                        {
-                            target.Add(i);
-                        }
+                        var target = new List<object>(path) { selector };
                         result.Add((filePath, target));
                     }
 
                     if (n.Children.Count > 0)
                     {
-                        var sub = new List<object>(path);
-                        if (!string.IsNullOrEmpty(key))
-                        {
-                            sub.Add(key);
-                            sub.Add(kth);
-                        }
-                        else
-                        {
-                            sub.Add(i);
-                        }
+                        var sub = new List<object>(path) { selector };
                         WalkChildren(n.Children, sub, filePath);
                     }
                 }
@@ -567,6 +687,73 @@ namespace Stellaris.Parser
         }
 
         // ========== 写入接口 ==========
+        /// <summary>
+        /// 撞击保存：把指定 root 的 relPath 文件的 AST（nodes）序列化写盘。
+        /// 供撞击扫描/合并保存使用（常规 _configResults 不涉及该 root 时也能落盘）。
+        /// 引擎层不直接操作底层——统一经此接口。
+        /// </summary>
+        public bool WriteCollisionFile(string relPath, string root, IReadOnlyList<AstNode> nodes)
+        {
+            if (string.IsNullOrEmpty(relPath) || string.IsNullOrEmpty(root) || nodes == null)
+                return false;
+            try
+            {
+                string fullPath = Path.Combine(root, relPath);
+                SetTask(ParserTaskType.WritingFile, fullPath);
+                string? dir = Path.GetDirectoryName(fullPath);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                    Directory.CreateDirectory(dir);
+                string content = SerializationHelper.Serialize(nodes as List<AstNode> ?? nodes.ToList());
+                SerializationHelper.WriteFile(fullPath, content);
+                _logger.LogInformation("撞击写回文件: {Path}", fullPath);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "撞击写回文件失败: {Path}", relPath);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 通用文本写盘：把 content 原样写入**指定 root** 的 relPath（自动建目录）。
+        /// 供外部写盘根（与 Roots 无关的目标目录）生成文件使用（如 Extension 工具的部署输出）。
+        /// encoding 可选："utf-8"（无 BOM）/ "utf-8-bom"（带 BOM）；缺省按扩展名规则
+        /// （.yml 带 BOM，其他无 BOM）。引擎层不直接操作底层——统一经此接口。
+        /// </summary>
+        public bool WriteTextFile(string relPath, string root, string content, string? encoding = null, bool append = false)
+        {
+            if (string.IsNullOrEmpty(relPath) || string.IsNullOrEmpty(root) || content == null)
+                return false;
+            try
+            {
+                string fullPath = Path.Combine(root, relPath);
+                SetTask(ParserTaskType.WritingFile, fullPath);
+                string? dir = Path.GetDirectoryName(fullPath);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                    Directory.CreateDirectory(dir);
+                // append：读已有内容拼接（底层直接 File 操作——SA 是磁盘读写层）
+                if (append && File.Exists(fullPath))
+                {
+                    var existing = File.ReadAllText(fullPath);
+                    if (!string.IsNullOrEmpty(existing) && !string.IsNullOrEmpty(content))
+                    {
+                        if (!existing.EndsWith("\n", StringComparison.Ordinal))
+                            existing += "\n";
+                        content = existing + content;
+                    }
+                }
+                SerializationHelper.WriteFile(fullPath, content, encoding);
+                _logger.LogInformation("文本写盘{Append}: {Path}", append ? "(追加)" : "", fullPath);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "文本写盘失败: {Path}", relPath);
+                return false;
+            }
+        }
+
         public bool WriteFile(string relPath, string? targetRoot = null)
         {
             if (string.IsNullOrEmpty(relPath) || !_configResults.TryGetValue(relPath, out var result))
@@ -606,6 +793,52 @@ namespace Stellaris.Parser
             finally
             {
                 SetTask(ParserTaskType.Idle);
+            }
+        }
+
+        /// <summary>读取任意文本文件（配置/导出专用——如 key_extract_config.json）。
+        /// 相对路径 → 按覆盖规则取生效 root 的文件；找不到返回 null。不写入内部状态。</summary>
+        public string? ReadTextFile(string relPath)
+        {
+            var norm = NormalizePath(relPath);
+            if (_configRoots.TryGetValue(norm, out var root) && !string.IsNullOrEmpty(root))
+            {
+                var full = Path.Combine(root, norm);
+                if (File.Exists(full))
+                    return File.ReadAllText(full);
+            }
+            // 无登记 root（该文件可能不在扫描扩展里）——按覆盖规则找 roots 最后一位存在者
+            for (int i = _roots.Count - 1; i >= 0; i--)
+            {
+                var full = Path.Combine(_roots[i], norm);
+                if (File.Exists(full))
+                    return File.ReadAllText(full);
+            }
+            return null;
+        }
+
+        /// <summary>导出文档专用写盘（如 .md）：写 Roots 最后一位的 relPath。
+        /// 独立方法——不占用现有 FileCategory（Config/Localisation），不经过类别表。</summary>
+        public bool WriteExportFile(string relPath, string content)
+        {
+            if (string.IsNullOrEmpty(relPath) || content == null || _roots.Count == 0)
+                return false;
+            try
+            {
+                var root = _roots[^1];
+                var full = Path.Combine(root, relPath);
+                SetTask(ParserTaskType.WritingFile, full);
+                var dir = Path.GetDirectoryName(full);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                    Directory.CreateDirectory(dir);
+                SerializationHelper.WriteFile(full, content);
+                _logger.LogInformation("导出文档写回: {Path}", full);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "导出文档写回失败: {Path}", relPath);
+                return false;
             }
         }
 

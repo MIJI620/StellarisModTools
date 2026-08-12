@@ -68,6 +68,31 @@ namespace Stellaris.Parser
             }
         }
 
+        // ========== 覆盖规则辅助 ==========
+
+        /// <summary>取某相对路径所属文件夹的覆盖规则：common/ 下取第二段（static_modifiers 等）；
+        /// 其他顶级文件夹（events/interface/map…）取第一段；common 以外未配置 = 后读覆盖（null）。</summary>
+        private string? GetFolderOverwriteRule(string relPath)
+        {
+            var parts = relPath.Split('/');
+            if (parts.Length == 0)
+                return null;
+            string folder = parts[0];
+            if (string.Equals(folder, "common", StringComparison.OrdinalIgnoreCase) && parts.Length > 1)
+                folder = parts[1];
+            return Rules?.GetOverwriteRule(folder);
+        }
+
+        /// <summary>该文件是否为"只读一次"（最早 root 生效，省略靠后）。</summary>
+        private bool IsReadOnce(string relPath)
+            => string.Equals(GetFolderOverwriteRule(relPath), "只读一次", StringComparison.Ordinal);
+
+        /// <summary>该 root 是否标记为"游戏"（只读一次规则跳过它——不算最早）。</summary>
+        private bool IsGameRoot(string root)
+            => !string.IsNullOrEmpty(GameRoot)
+               && string.Equals(Path.GetFullPath(root), Path.GetFullPath(GameRoot),
+                   StringComparison.OrdinalIgnoreCase);
+
         // ========== 阶段1：初始解析 ==========
         private void ParseAllFiles()
         {
@@ -77,6 +102,9 @@ namespace Stellaris.Parser
                 LoadGlobalConstants();
 
                 var allFiles = new Dictionary<string, (string root, string fullPath)>();
+                var gameFallback = new Dictionary<string, (string root, string fullPath)>();
+                // 撞击收集（与覆盖规则无关——所有 root 同名相对路径全记，供撞击扫描接口使用）
+                var scanCollisions = new Dictionary<string, List<(string root, string fullPath)>>(StringComparer.OrdinalIgnoreCase);
                 foreach (var root in _roots)
                 {
                     foreach (var file in Directory.EnumerateFiles(root, "*.*", SearchOption.AllDirectories))
@@ -85,8 +113,36 @@ namespace Stellaris.Parser
                             continue;
 
                         string relPath = NormalizePath(Path.GetRelativePath(root, file));
+                        if (!scanCollisions.TryGetValue(relPath, out var hits))
+                            scanCollisions[relPath] = hits = new List<(string, string)>();
+                        hits.Add((root, file));
+                        bool readOnce = IsReadOnce(relPath);
+                        // 只读一次 + 标记为游戏的 root：不算最早（暂存——若之后无其他 root 则回退）
+                        if (readOnce && IsGameRoot(root))
+                        {
+                            gameFallback[relPath] = (root, file);
+                            continue;
+                        }
+                        // 覆盖规则：**只读一次** → 同相对路径只保留最早 root（编码顺序靠前的生效，省略靠后的）；
+                        // 其他（后读覆盖/自动整合/内容重复）→ 后 root 覆盖前 root（越早越优先处理）
+                        if (allFiles.ContainsKey(relPath) && readOnce)
+                            continue;
                         allFiles[relPath] = (root, file);
                     }
+                }
+                // 只读一次：游戏 root 被跳过——若之后无其他 root 的同名文件，回退到游戏文件
+                foreach (var kv in gameFallback)
+                {
+                    if (!allFiles.ContainsKey(kv.Key))
+                        allFiles[kv.Key] = kv.Value;
+                }
+
+                // 相对路径撞击表：仅保留 >1 个 root 撞同一相对路径的（常规扫描仍按覆盖规则合并）
+                _pathCollisions.Clear();
+                foreach (var kv in scanCollisions)
+                {
+                    if (kv.Value.Count > 1)
+                        _pathCollisions[kv.Key] = kv.Value;
                 }
 
                 _csvCache.Clear();

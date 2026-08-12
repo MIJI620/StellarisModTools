@@ -1,4 +1,4 @@
-// 文件: Stellaris.Editor/Pages/StaticMapPage.xaml.cs
+﻿// 文件: Stellaris.Editor/Pages/StaticMapPage.xaml.cs
 // 静态地图页（参照动态地图布局）：左预览 + 右（静态列表 + 参数/其他/形状/颜色）。
 // 静态地图参数比动态少（无恒星数/半径/星团/航道/星云等）；
 // "参数"页含"生成形状占位符"功能（为静态地图注册占位样式）。
@@ -12,6 +12,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
+using Stellaris.Editor.Controls;
 using Stellaris.Engine.GalaxyMap;
 
 namespace Stellaris.Editor.Pages;
@@ -19,6 +20,7 @@ namespace Stellaris.Editor.Pages;
 public partial class StaticMapPage : UserControl
 {
     private readonly EngineServices _services;
+    private System.Windows.Threading.DispatcherTimer _mapDebounce = null!;   // 搜索框 2 秒防抖
     private string? _currentMap;
     private string? _currentPreviewShape;
 
@@ -28,6 +30,8 @@ public partial class StaticMapPage : UserControl
     // 地图列表拖拽排序状态
     private Point _dragStart;
     private readonly List<MapListItem> _dragItems = new();
+    /// <summary>全部地图项（列表搜索过滤的底层数据——ReloadMaps 时备份完整顺序）。</summary>
+    private readonly List<MapListItem> _allMapItems = new();
     private bool _dragging;
     private Point _shapeDragStart;
     private readonly List<ShapeRowItem> _shapeDragItems = new();
@@ -92,6 +96,9 @@ public partial class StaticMapPage : UserControl
     {
         _services = services;
         InitializeComponent();
+        MapFilterBox.ToolTip = _services.Localisation.Get("common.list_search");
+        MapFilterSearchButton.ToolTip = _services.Localisation.Get("common.list_search");
+        _mapDebounce = Stellaris.Editor.Controls.SearchDebouncer.Attach(MapFilterBox, () => OnMapFilterSearch(this, new RoutedEventArgs()));
 
         var loc = services.Localisation;
         TabBasic.Header = loc.Get("dynmap.tab.basic");
@@ -203,7 +210,63 @@ public partial class StaticMapPage : UserControl
         foreach (var name in engine.StaticScenarios.Keys)
             items.Add(new MapListItem(name, isStatic: true, engine.GetStaticScenario(name)!.Priority, LocMapName(name), engine.GetStaticScenario(name)!.Systems.Count));
         foreach (var item in items.OrderBy(i => i.Priority).ThenBy(i => i.Name, StringComparer.Ordinal))
-            StaticMapList.Items.Add(item);
+            _allMapItems.Add(item);
+        ApplyMapFilter(keepSelection: false);
+    }
+
+    /// <summary>列表搜索按钮：按输入值过滤（匹配 Name 键 或 本地化显示名，忽略大小写）。</summary>
+    /// <summary>列表搜索框回车：普通回车 → 触发搜索；Shift+回车 → 插入 \\n（统一）。</summary>
+    private void OnFilterBoxKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == System.Windows.Input.Key.Enter)
+        {
+            if ((System.Windows.Input.Keyboard.Modifiers & System.Windows.Input.ModifierKeys.Shift) != 0)
+            {
+                e.Handled = true;
+                var box = (System.Windows.Controls.TextBox)sender;
+                var idx = box.CaretIndex;
+                box.Text = box.Text.Insert(idx, "\\n");
+                box.CaretIndex = idx + 2;
+                return;
+            }
+            e.Handled = true;
+            _mapDebounce.Stop();   // 手动搜索后停止防抖计时器（防 2 秒后重复触发）
+            OnMapFilterSearch(this, new RoutedEventArgs());
+        }
+    }
+
+    private void OnMapFilterSearch(object sender, RoutedEventArgs e)
+    {
+        ApplyMapFilter(keepSelection: true);
+    }
+
+    /// <summary>应用地图列表过滤；输入为空时恢复全部。keepSelection=true 时按当前选中键找回选中。</summary>
+    private void ApplyMapFilter(bool keepSelection)
+    {
+        string? keepName = null;
+        if (keepSelection && StaticMapList.SelectedItem is MapListItem cur)
+            keepName = cur.Name;
+
+        StaticMapList.Items.Clear();
+        var pat = MapFilterBox?.Text?.Trim();
+        foreach (var item in _allMapItems)
+        {
+            if (string.IsNullOrEmpty(pat)
+                || item.Name.Contains(pat, StringComparison.OrdinalIgnoreCase)
+                || item.Display.Contains(pat, StringComparison.OrdinalIgnoreCase))
+                StaticMapList.Items.Add(item);
+        }
+        if (keepName != null)
+        {
+            for (int i = 0; i < StaticMapList.Items.Count; i++)
+            {
+                if (StaticMapList.Items[i] is MapListItem mli && mli.Name == keepName)
+                {
+                    StaticMapList.SelectedIndex = i;
+                    break;
+                }
+            }
+        }
     }
 
     /// <summary>地图键 → 本地化显示名（按当前界面语言；无本地化回退键）。</summary>
@@ -344,87 +407,16 @@ public partial class StaticMapPage : UserControl
             SelectMap(newKey);
         }));
 
-        var langs = _services.StyleEngine?.GetEnabledLanguages() ?? new List<string>();
-        if (langs.Count == 0)
-            langs = new List<string> { "english" };
-        var langCombo = new ComboBox { Margin = new Thickness(0, 8, 0, 4), HorizontalAlignment = HorizontalAlignment.Stretch };
-        foreach (var l in langs)
-            langCombo.Items.Add(new ComboBoxItem { Content = loc.GetLanguageDisplayNameLocalized(l), Tag = l });
-        string curLang = loc.CurrentLanguage;
-        string mappedLang = MapUiLangToModLang(curLang);
-        string selectedLang = langs.Contains(mappedLang) ? mappedLang
-            : (langs.Contains("english") ? "english" : langs.FirstOrDefault() ?? string.Empty);
-        foreach (object o in langCombo.Items)
+        // 统一本地化组件（LocalisationEditBox）：边框 + 语种下拉 + 名称/描述（逻辑值可编辑 → 显示值只读）
+        var locBox = new LocalisationEditBox
         {
-            if (o is ComboBoxItem it && it.Tag is string code && code == selectedLang)
-            {
-                langCombo.SelectedItem = it;
-                break;
-            }
-        }
-        OtherPanel.Children.Add(langCombo);
-
-        // 地图名：逻辑值（可编辑）/ 显示值（只读）
-        var logicalBox = new TextBox { Margin = new Thickness(0, 0, 0, 4) };
-        var displayText = new TextBlock
-        {
-            Margin = new Thickness(0, 0, 0, 4),
-            TextWrapping = TextWrapping.Wrap,
-            MaxHeight = 60,
-            Foreground = new SolidColorBrush(Color.FromRgb(0x60, 0x60, 0x60))
+            Adapter = _services.Adapter,
+            GetNameKey = () => currentMapKey,
+            GetLangs = () => _services.StyleEngine?.GetEnabledLanguages() ?? new List<string> { "english" },
+            SaveLocalisation = (lang, key, value) => UpdateMapLocalisation(lang, key, value)
         };
-        // 地图描述（= 占位样式的描述，键 {mapKey}_desc）：逻辑值（可编辑）/ 显示值（只读）
-        var descLogicalBox = new TextBox
-        {
-            AcceptsReturn = true,
-            TextWrapping = TextWrapping.Wrap,
-            Height = 72,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            Margin = new Thickness(0, 0, 0, 4)
-        };
-        var descDisplayText = new TextBlock
-        {
-            Margin = new Thickness(0, 0, 0, 4),
-            TextWrapping = TextWrapping.Wrap,
-            MaxHeight = 100,
-            Foreground = new SolidColorBrush(Color.FromRgb(0x60, 0x60, 0x60))
-        };
-
-        void Fill(string lang)
-        {
-            logicalBox.Text = _services.Adapter?.GetLocalisedLogicalText(currentMapKey, lang) ?? currentMapKey;
-            displayText.Text = _services.Adapter?.GetLocalisedText(currentMapKey, lang) ?? currentMapKey;
-            string descKey = $"{currentMapKey}_desc";
-            descLogicalBox.Text = _services.Adapter?.GetLocalisedLogicalText(descKey, lang) ?? string.Empty;
-            descDisplayText.Text = _services.Adapter?.GetLocalisedText(descKey, lang) ?? string.Empty;
-        }
-        if (langCombo.SelectedItem is ComboBoxItem first && first.Tag is string firstLang)
-            Fill(firstLang);
-        langCombo.SelectionChanged += (_, _) =>
-        {
-            if (langCombo.SelectedItem is ComboBoxItem item && item.Tag is string l)
-                Fill(l);
-        };
-        logicalBox.LostFocus += (_, _) =>
-        {
-            if (langCombo.SelectedItem is ComboBoxItem item && item.Tag is string l)
-            {
-                UpdateMapLocalisation(l, currentMapKey, logicalBox.Text);
-                Fill(l);
-            }
-        };
-        descLogicalBox.LostFocus += (_, _) =>
-        {
-            if (langCombo.SelectedItem is ComboBoxItem item && item.Tag is string l)
-            {
-                UpdateMapLocalisation(l, $"{currentMapKey}_desc", descLogicalBox.Text);
-                Fill(l);
-            }
-        };
-        OtherPanel.Children.Add(BuildLocControlRow(loc.Get("dynmap.name_logical"), logicalBox));
-        OtherPanel.Children.Add(BuildLocControlRow(loc.Get("dynmap.name_display"), displayText));
-        OtherPanel.Children.Add(BuildLocControlRow(loc.Get("dynmap.desc_logical"), descLogicalBox));
-        OtherPanel.Children.Add(BuildLocControlRow(loc.Get("dynmap.desc_display"), descDisplayText));
+        locBox.Reload();
+        OtherPanel.Children.Add(locBox);
 
         // ---- 绑定样式 + 核心半径比例（静态地图专用）----
         var boundCombo = new ComboBox { Margin = new Thickness(0, 4, 0, 0) };

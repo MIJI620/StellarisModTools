@@ -1139,6 +1139,43 @@ public sealed class GalaxyStyleEngine : IDisposable
         }
     }
 
+    /// <summary>应用 galaxy.json 里保存的样式顺序（style_order——重启/重载后恢复拖拽排序）。
+    /// 仅应用已存在的 key；无存储顺序时保持文件顺序。</summary>
+    public void ApplyStoredStyleOrder()
+    {
+        if (_configManager == null)
+            return;
+        try
+        {
+            var stored = _configManager.Get("galaxy", "style_order");
+            if (stored is not System.Collections.IEnumerable list)
+                return;
+            var order = new List<string>();
+            foreach (var item in list)
+            {
+                var s = item?.ToString();
+                if (!string.IsNullOrEmpty(s) && _table.GetAllNames().Contains(s))
+                    order.Add(s);
+            }
+            // 补上未在存储中的样式（新增样式保持末尾）
+            foreach (var name in _table.GetAllNames())
+            {
+                if (!order.Contains(name))
+                    order.Add(name);
+            }
+            if (order.Count > 0)
+                ReorderStyles(order);
+        }
+        catch (KeyNotFoundException)
+        {
+            // 尚未保存过 style_order（galaxy.json 无此键）——正常，保持文件顺序
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "应用存储的样式顺序失败");
+        }
+    }
+
     public bool RenameStyle(string oldName, string newName)
     {
         lock (_syncRoot)
@@ -1641,7 +1678,7 @@ public sealed class GalaxyStyleEngine : IDisposable
                 // 步骤 3：计算本次将写入的内容哈希（含规整化修正），并与写盘前的样式块基线比较
                 _logger.LogInformation("[保存计时] 步骤2b gfx 收集: {Ms}ms", sw.ElapsedMilliseconds);
                 var entries = _table.BuildAllStyleBlocks();
-                string hash1Content = SerializationHelper.Serialize(entries);
+                string hash1Content = _adapter.SerializeNodes(entries);
                 byte[] bytes = Encoding.UTF8.GetBytes(hash1Content);
                 string hash1 = Convert.ToHexString(SHA256.HashData(bytes));
 
@@ -1652,7 +1689,7 @@ public sealed class GalaxyStyleEngine : IDisposable
                 {
                     foreach (var node in beforeResult.RootNodes)
                         if (node.Type == NodeType.Block && node.Key != null)
-                            diskBlocks[node.Key] = SerializationHelper.Serialize(new List<AstNode> { node });
+                            diskBlocks[node.Key] = _adapter.SerializeNodes(new List<AstNode> { node });
                 }
                 var changedStyles = new List<string>();
                 foreach (var name in _table.GetAllNames())
@@ -1660,7 +1697,7 @@ public sealed class GalaxyStyleEngine : IDisposable
                     var def = _table.GetStyle(name);
                     if (def == null)
                         continue;
-                    string mem = SerializationHelper.Serialize(new List<AstNode> { _table.BuildStyleBlock(name, def.Parameters) });
+                    string mem = _adapter.SerializeNodes(new List<AstNode> { _table.BuildStyleBlock(name, def.Parameters) });
                     if (!string.Equals(mem, diskBlocks.GetValueOrDefault(name), StringComparison.Ordinal))
                         changedStyles.Add(name);
                 }
@@ -1818,6 +1855,8 @@ public sealed class GalaxyStyleEngine : IDisposable
         }
 
         var syncData = new Dictionary<string, object>();
+        // 样式顺序（拖拽排序——持久化，重启/重载后恢复）
+        syncData["style_order"] = _table.GetAllNames().ToList();
         foreach (string name in _table.GetAllNames())
         {
             // 实际开关优先（用户经 UI/SetStyleSwitch 写入 galaxy.json 的值）；

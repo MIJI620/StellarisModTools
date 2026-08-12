@@ -35,6 +35,11 @@ public sealed class EngineServices
     public GalaxyMapEngine? MapEngine { get; set; }
     public Stellaris.Engine.SystemInitializer.SystemInitializerEngine? SystemInitializerEngine { get; set; }
     public Stellaris.Engine.Localisation.LocalisationDictionaryEngine? DictionaryEngine { get; set; }
+    public Stellaris.Engine.StaticModifier.StaticModifierEngine? StaticModifierEngine { get; set; }
+    public Stellaris.Engine.EdictDecision.EdictDecisionEngine? EdictDecisionEngine { get; set; }
+    public Stellaris.Engine.StrategicResource.StrategicResourceEngine? StrategicResourceEngine { get; set; }
+    public Stellaris.Engine.Technology.TechnologyEngine? TechnologyEngine { get; set; }
+    public Stellaris.Engine.Ship.ShipEngine? ShipEngine { get; set; }
 
     /// <summary>当前已配置的根目录列表（顺序 = 优先级）。</summary>
     public List<string> Roots => Preferences.Roots;

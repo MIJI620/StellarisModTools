@@ -13,12 +13,18 @@
             <Image Source="Resources/app_icon.png"
                    Width="160" Height="160" Stretch="Uniform"
                    VerticalAlignment="Center" HorizontalAlignment="Center" Margin="0,0,0,80" />
-            <!-- 文本区：垂直靠底部居中 -->
+            <!-- 文本区：位于底部；文本在标签内垂直居中 -->
             <StackPanel VerticalAlignment="Bottom" HorizontalAlignment="Stretch" Margin="28,0,28,36">
-                <TextBlock x:Name="MainText" FontSize="14" Foreground="Black"
-                           TextAlignment="Center" TextWrapping="Wrap" />
-                <TextBlock x:Name="SubText" FontSize="12" Foreground="#505050"
-                           TextAlignment="Center" TextWrapping="Wrap" Margin="0,10,0,0" />
+                <!-- 显示层固定 ≤3 行：CompactLines 已按字符数切成 块1/…/块N（每块短——不换行撑高）；
+                     TextBox 只读——文本在标签内垂直居中 -->
+                <TextBox x:Name="MainText" FontSize="14" Foreground="Black"
+                         Background="Transparent" BorderThickness="0" IsReadOnly="True"
+                         Focusable="False" TextAlignment="Center" VerticalContentAlignment="Center"
+                         TextWrapping="Wrap" MaxHeight="59" />
+                <TextBox x:Name="SubText" FontSize="12" Foreground="#505050"
+                         Background="Transparent" BorderThickness="0" IsReadOnly="True"
+                         Focusable="False" TextAlignment="Center" VerticalContentAlignment="Center"
+                         TextWrapping="Wrap" Margin="0,10,0,0" MaxHeight="50" />
             </StackPanel>
             </Grid>
         </Border>

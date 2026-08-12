@@ -1,4 +1,4 @@
-// 文件: Stellaris.Tests/NormalizeSaveTests.cs
+﻿// 文件: Stellaris.Tests/NormalizeSaveTests.cs
 // 规整化/保存重构的集成测试：
 //   1) 保存只写本 mod 目录——外部 root（游戏本体等）的本地化键绝不复制进 mod；
 //   2) 新样式本地化写入合规文件 style_l_{lang}.yml；
@@ -19,6 +19,35 @@ namespace Stellaris.Tests;
 
 public class NormalizeSaveTests
 {
+    // ============ 标准选择路径辅助（SelectorResolver 新规范） ============
+
+    private static Dictionary<string, object> D(params (string, object)[] kv)
+        => kv.ToDictionary(k => k.Item1, k => k.Item2);
+
+    private static Dictionary<string, object> Leaf(string target, string kw)
+        => D(("target", target), ("keywords", new List<object> { kw }));
+
+    private static Dictionary<string, object> SimpleExists(string key, string value)
+        => D(("mode", "Simple"), ("match", D(("rule", new List<object> { Leaf("key", key), Leaf("value", value) }))));
+
+    private static List<object> SpriteTypesPath()
+        => new() { D(("mode", "Block"), ("match", D(("rule", new List<object> { Leaf("key", "spriteTypes") })))) };
+
+    private static List<object> SpriteTypePath(string name)
+        => new()
+        {
+            D(("mode", "Block"), ("match", D(("rule", new List<object> { Leaf("key", "spriteTypes") })))),
+            D(("mode", "Block"), ("match", D(("rule", new List<object> { SimpleExists("name", name) }))))
+        };
+
+    private static List<object> FirstSpriteTypeNameFieldPath()
+        => new()
+        {
+            D(("mode", "Block"), ("match", D(("rule", new List<object> { Leaf("key", "spriteTypes") })))),
+            D(("mode", "Block"), ("index", 1L)),
+            D(("mode", "Simple"), ("match", D(("rule", new List<object> { Leaf("key", "name") }))))
+        };
+
     private static (string RootA, string RootB, string Tmp) CreateSandbox()
     {
         string tmp = Path.Combine(Path.GetTempPath(), "smt_norm_" + Guid.NewGuid().ToString("N"));
@@ -37,6 +66,41 @@ public class NormalizeSaveTests
         adapter.AddRoot(rootB);
         adapter.ScanAll();
         return adapter;
+    }
+
+    [Test]
+    public void StyleOrderPersistsViaLocalConfig()
+    {
+        var (rootA, rootB, tmp) = CreateSandbox();
+        try
+        {
+            var adapter = BuildAdapter(rootA, rootB);
+            var image = new ImageAssetEngine(new List<string> { rootA, rootB });
+            var sprite = new SpriteManagementEngine(adapter, image);
+            var cm = new Stellaris.Engine.LocalConfigManager.LocalConfigManager(Path.Combine(rootB, ".smt"));
+            var engine = new GalaxyStyleEngine(adapter, image, sprite, "smt", configManager: cm);
+            engine.AddStyle("style_a", new GalaxyShapeParameters());
+            engine.AddStyle("style_b", new GalaxyShapeParameters());
+            engine.AddStyle("style_c", new GalaxyShapeParameters());
+            // 拖拽排序：c, a, b
+            engine.ReorderStyles(new List<string> { "style_c", "style_a", "style_b" });
+            var result = engine.SaveAllStyles();
+            Assert.True(result.WriteSuccess, "保存成功");
+            // style_order 已持久化到 galaxy.json
+            var stored = cm.Get("galaxy", "style_order");
+            Assert.NotNull(stored, "style_order 已保存到 galaxy.json");
+            // 新引擎读回应用（同一 adapter——表已加载；ApplyStoredStyleOrder 重排）
+            var engine2 = new GalaxyStyleEngine(adapter, image, sprite, "smt", configManager: cm);
+            engine2.ApplyStoredStyleOrder();
+            var names = engine2.GetAllStyleNames();
+            Assert.Equal("style_c", names[0], "顺序恢复：c 在首位");
+            Assert.Equal("style_a", names[1], "顺序恢复：a 第二");
+            Assert.Equal("style_b", names[2], "顺序恢复：b 第三");
+        }
+        finally
+        {
+            try { Directory.Delete(tmp, true); } catch { }
+        }
     }
 
     [Test]
@@ -372,7 +436,7 @@ static_galaxy_scenario = {
         var adapter = new StellarisAdapter();
         string gfx = "interface/game_setup/x.gfx";
         adapter.CreateEmptyFileInMemory(gfx, FileCategory.Config);
-        adapter.AddConfigNode(gfx, new List<object> { "spriteTypes" },
+        adapter.AddConfigNode(gfx, SpriteTypesPath(),
             new AstNode
             {
                 Type = NodeType.Block,
@@ -384,7 +448,7 @@ static_galaxy_scenario = {
                 }
             });
 
-        adapter.RemoveConfigNode(gfx, new List<object> { "spriteTypes", ("name", "GFX_a") });
+        adapter.RemoveConfigNode(gfx, SpriteTypePath("GFX_a"));
 
         var r = adapter.GetConfig(gfx);
         int sprites = r?.RootNodes.Sum(n => n.Children.Count(c => c.Key == "spriteType")) ?? -1;
@@ -413,7 +477,7 @@ static_galaxy_scenario = {
                     new AstNode { Type = NodeType.Simple, Key = "texturefile", Value = $"{i}.dds", IsQuoted = true }
                 }
             };
-            adapter.AddConfigNode(gfx, new List<object> { "spriteTypes" }, block,
+            adapter.AddConfigNode(gfx, SpriteTypesPath(), block,
                 existingPredicate: node => node.Type == NodeType.Block
                     && node.Children.Any(c => c.Type == NodeType.Simple && c.Key == "name" && Equals(c.Value, spriteName)));
         }
@@ -730,7 +794,7 @@ static_galaxy_scenario = {
             var adapter = new StellarisAdapter();
             string gfx = "interface/game_setup/fv_test.gfx";
             adapter.CreateEmptyFileInMemory(gfx, FileCategory.Config);
-            adapter.AddConfigNode(gfx, new List<object> { "spriteTypes" },
+            adapter.AddConfigNode(gfx, SpriteTypesPath(),
                 new AstNode
                 {
                     Type = NodeType.Block,
@@ -744,11 +808,11 @@ static_galaxy_scenario = {
             var hits = adapter.FindStringValues("GFX_galaxy_preview_x");
             Assert.True(hits.Count >= 2 && (int)hits[0] == 1, "应找到 1 次且第 1 位为次数");
             var (file, path) = ((string, List<object>))hits[1];
-            Assert.True(path.Count >= 3 && path[^1] is int && path[^2] is string, "目标叶应为 Key+int（第几个）");
+            Assert.True(path.Count >= 2 && path[^1] is IDictionary<string, object>, "反向搜索输出：标准选择路径（每层字典 {mode,index}）");
 
-            // 混合链验证 A：标签 + 数值（第几个）+ 标签——加第 2 个 spriteType 块，
-            // 用 spriteTypes -> spriteType -> 1 -> name（int 选第 2 个块后下钻 name）删除其 name。
-            adapter.AddConfigNode(gfx, new List<object> { "spriteTypes" },
+            // 混合链验证 A（新标准逐层语义）：spriteTypes → 子层第 1 个 Block（字典 index）→ name。
+            // 旧写法 ["spriteTypes","spriteType",0,"name"] 的 int 语义已废弃（int 作用于展平空间）。
+            adapter.AddConfigNode(gfx, SpriteTypesPath(),
                 new AstNode
                 {
                     Type = NodeType.Block,
@@ -758,14 +822,14 @@ static_galaxy_scenario = {
                         new AstNode { Type = NodeType.Simple, Key = "name", Value = "GFX_galaxy_preview_y", IsQuoted = true }
                     }
                 });
-            var mixed = new List<object> { "spriteTypes", "spriteType", 0, "name" };
+            var mixed = FirstSpriteTypeNameFieldPath();
             adapter.RemoveConfigNode(gfx, mixed);
             var mixedRemaining = adapter.FindStringValues("GFX_galaxy_preview_y");
             System.Console.WriteLine("y count after: " + (int)mixedRemaining[0]);
-            Assert.True((int)mixedRemaining[0] == 0, "混合链（标签+数值+标签）应能定位删除");
+            Assert.True((int)mixedRemaining[0] == 0, "混合链（标签+字典 index+标签）应能定位删除");
 
             // 混合链验证 B：标签 + 元组（数值判断）——元组匹配"含 name=z 字段的子块"并删除该块。
-            adapter.AddConfigNode(gfx, new List<object> { "spriteTypes" },
+            adapter.AddConfigNode(gfx, SpriteTypesPath(),
                 new AstNode
                 {
                     Type = NodeType.Block,
@@ -775,15 +839,16 @@ static_galaxy_scenario = {
                         new AstNode { Type = NodeType.Simple, Key = "name", Value = "GFX_galaxy_preview_z", IsQuoted = true }
                     }
                 });
-            var mixedTuple = new List<object> { "spriteTypes", ("name", "GFX_galaxy_preview_z") };
+            var mixedTuple = SpriteTypePath("GFX_galaxy_preview_z");
             adapter.RemoveConfigNode(gfx, mixedTuple);
             var tupleRemaining = adapter.FindStringValues("GFX_galaxy_preview_z");
             Assert.True((int)tupleRemaining[0] == 0, "混合链（标签+元组）应能定位删除");
             System.Console.WriteLine("FV path: " + string.Join(" -> ", path));
 
+            // 用反向搜索返回的标准路径删除（新格式与逐层 CRUD 兼容——直接可用）
             adapter.RemoveConfigNode(file, path);
             var remaining = adapter.FindStringValues("GFX_galaxy_preview_x");
-            Assert.True((int)remaining[0] == 0, "用返回的 targetPath 删除后应再无该值");
+            Assert.True((int)remaining[0] == 0, "用返回的标准路径删除后应再无该值");
         }
     }
 

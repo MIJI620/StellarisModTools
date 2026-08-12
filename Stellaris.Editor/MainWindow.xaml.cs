@@ -24,13 +24,11 @@ public partial class MainWindow : Window
         DataContext = _viewModel;
 
         BuildNavItems();
-        // 导航切到动态地图页时刷新（星系样式参数更新 → 理论上限同步）
+        // 导航切到地图壳页时刷新当前显示的页（星系样式参数更新 → 理论上限同步；原动态/静态页各自刷新）
         _viewModel.PropertyChanged += (_, e) =>
         {
-            if (e.PropertyName == "Selected" && ReferenceEquals(_viewModel.CurrentPage, _dynamicMapPage))
-                _dynamicMapPage?.Refresh();
-            else if (e.PropertyName == "Selected" && ReferenceEquals(_viewModel.CurrentPage, _staticMapPage))
-                _staticMapPage?.Refresh();
+            if (e.PropertyName == "Selected" && ReferenceEquals(_viewModel.CurrentPage, _mapIndexPage))
+                _mapIndexPage?.Refresh();
         };
         _viewModel.Selected = _viewModel.NavItems.Count > 0 ? _viewModel.NavItems[0] : null;
 
@@ -86,52 +84,35 @@ public partial class MainWindow : Window
     private void BuildNavItems()
     {
         var loc = _services.Localisation;
+        // 最上方：法令/决议（可视化编辑器——本期不落盘）
+        // 综合（法令/决议/静态加成/战略资源 4 合 1——用户 2026-08 改名，nav.edict 键也改避免误导）
         _viewModel.NavItems.Add(new NavItem
         {
-            TitleKey = "nav.style",
-            Title = loc.Get("nav.style"),
-            Page = new GalaxyStylePage(_services)
+            TitleKey = "nav.comprehensive",
+            Title = loc.Get("nav.comprehensive"),
+            Page = new EdictDecisionPage(_services)
         });
-        // 动态地图页：选中静态地图时切换到静态地图页面（输出接口）
-        _dynamicMapPage = new DynamicMapPage(_services);
-        _dynamicMapPage.StaticMapRequested += OnStaticMapRequested;
-        _viewModel.NavItems.Add(new NavItem { TitleKey = "nav.dynamic", Title = loc.Get("nav.dynamic"), Page = _dynamicMapPage });
-        _staticMapPage = new StaticMapPage(_services);
-        _staticMapPage.DynamicMapRequested += OnDynamicMapRequested;
-        _viewModel.NavItems.Add(new NavItem { TitleKey = "nav.static", Title = loc.Get("nav.static"), Page = _staticMapPage });
+        // 战略资源已移入"综合"页（用户 2026-08）——左侧导航项删除
         _viewModel.NavItems.Add(new NavItem
         {
-            TitleKey = "nav.language_dictionary",
-            Title = loc.Get("nav.language_dictionary"),
-            Page = new LanguageDictionaryPage(_services)
+            TitleKey = "nav.tech",
+            Title = loc.Get("nav.tech"),
+            Page = new TechnologyGraphPage(_services)
+        });
+        // 星系样式归入"地图"导航项（用户 2026-08：叠放模式，不占左侧导航）
+        _mapIndexPage = new MapIndexPage(_services);
+        _viewModel.NavItems.Add(new NavItem { TitleKey = "nav.map", Title = loc.Get("nav.map"), Page = _mapIndexPage });
+        // 目录索引（用户 2026-08）：语言字典 + 加成字典合并为一个页面（内部 2 选项卡：语言 / 加成）
+        _viewModel.NavItems.Add(new NavItem
+        {
+            TitleKey = "nav.dictionary_index",
+            Title = loc.Get("nav.dictionary_index"),
+            Page = new DictionaryIndexPage(_services)
         });
         _viewModel.NavItems.Add(new NavItem { TitleKey = "nav.settings", Title = loc.Get("nav.settings"), Page = new SettingsPage(_services) });
     }
 
-    private DynamicMapPage? _dynamicMapPage;
-    private StaticMapPage? _staticMapPage;
-
-    /// <summary>动态地图页选中静态地图 → 切换到静态地图页面并传入地图名。</summary>
-    private void OnStaticMapRequested(object? sender, string mapName)
-    {
-        var staticNav = _viewModel.NavItems.FirstOrDefault(n => n.TitleKey == "nav.static");
-        if (staticNav != null)
-        {
-            _viewModel.Selected = staticNav;
-            _staticMapPage?.SetMap(mapName);
-        }
-    }
-
-    /// <summary>静态地图页选中动态地图 → 切回动态地图页并选中该地图（双向切换）。</summary>
-    private void OnDynamicMapRequested(object? sender, string mapName)
-    {
-        var dynamicNav = _viewModel.NavItems.FirstOrDefault(n => n.TitleKey == "nav.dynamic");
-        if (dynamicNav != null)
-        {
-            _viewModel.Selected = dynamicNav;
-            _dynamicMapPage?.SetMap(mapName);
-        }
-    }
+    private MapIndexPage? _mapIndexPage;
 
     /// <summary>应用偏好中的界面字体与字号（设置页切换后亦调用）。</summary>
     public void ApplyUserFont()
@@ -140,6 +121,8 @@ public partial class MainWindow : Window
         {
             FontFamily = new System.Windows.Media.FontFamily(_services.Preferences.FontFamily);
             FontSize = _services.Preferences.FontSize;
+            // 全局统一字号：重建隐式 TextBox 样式（所有输入框立即跟随）
+            App.ApplyFontStyle(_services.Preferences.FontSize);
         }
         catch
         {

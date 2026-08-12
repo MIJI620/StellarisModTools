@@ -68,6 +68,10 @@ public class Lexer
         if (char.IsDigit(ch) || (ch == '.' && _pos + 1 < _length && char.IsDigit(_text[_pos + 1])))
             return ScanNumberOrIdent(ch);
 
+        // 正负号紧跟数字（无空格）→ 合法数值（用户 2026-08：-0.15 是数字；+/- 后非数字或空格 → 保持 Simple/标识符）
+        if ((ch == '-' || ch == '+') && _pos + 1 < _length && char.IsDigit(_text[_pos + 1]))
+            return ScanNumberOrIdent(ch);
+
         if (ch == '{') { int s = _pos; _pos++; _column++; return new Token(TokenType.Lbrace, null, _line, _column - 1, s, _pos); }
         if (ch == '}') { int s = _pos; _pos++; _column++; return new Token(TokenType.Rbrace, null, _line, _column - 1, s, _pos); }
         if (ch == '=') { int s = _pos; _pos++; _column++; return new Token(TokenType.Equals, null, _line, _column - 1, s, _pos); }
@@ -220,7 +224,13 @@ public class Lexer
         var numStr = new StringBuilder();
         bool hasDot = false, hasDigit = false;
 
-        if (char.IsDigit(firstChar))
+        if (firstChar == '-' || firstChar == '+')
+        {
+            // 有符号数字（调用方已保证紧跟数字）：-0.15 / +5——符号并入数值
+            numStr.Append(firstChar);
+            _pos++; _column++;
+        }
+        else if (char.IsDigit(firstChar))
         {
             numStr.Append(firstChar);
             hasDigit = true;

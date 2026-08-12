@@ -13,6 +13,48 @@
 
 ## Stellaris.Engine
 
+### `Stellaris.Engine/Technology/TechnologyEngine.cs`（科技引擎——只读浏览 + 专属索引）
+
+- **ScanAll**() — 重扫描（幂等）：扫描 `common/technology/*.txt` 全部顶层块 → TechNode + 索引重建；category 图标映射（`common/technology/category/00_category.txt`）。
+- **TechNode** — Key / Area（大类）/ Categories（学科）/ Tier / Cost（@常量经 SA 解析）/ Levels / CostPerLevel / Prerequisites / IsRare / IsDangerous / StartTech / Icon。
+- **GetAll**() / **Get**(key) / **GetByArea**(area) / **GetByCategory**(category) / **GetByTier**(tier) — 专属索引查询。
+- **GetPrerequisites**(key) / **GetChildren**(key) — 前置 / 后继（反查，连线用）。
+- **GetCategoryIcon**(category) / **GetTechIconPath**(tech) — 学科 / 科技图标相对路径（dds）。
+- **LocalisedName**(key, lang) / **LocalisedDesc**(key, lang) — 本地化（无词条回退 key / 空串）。
+- **GetModifierLines**(tech, lang) — modifier 显示行 `(Key, Display)`：**复用 StaticModifierEngine**（有翻译用翻译，没翻译用原键——用户规则）。
+- 数据源全经 SA（GetFilesInDirectory / GetConfig / ResolveConstantInput / GetLocalisedText），不落盘。
+
+### `Stellaris.Engine/Technology/TechnologyLayout.cs`（科技节点图布局）
+
+- **ComputeLabelMode**(techs, heightProvider?) — ✅ 当前唯一在用（**文本标签模式**）：3 行（物理→社会→工程，+other 尾行）+ 行内 tier 分列 + **cost 小列**（同 cost 同小列竖排、cost 升序横向阶梯——原有先后次序保留）；**同阶同宽**（同 tier 跨行同宽同 X，不同阶可不同宽）；小列内按**"前置总数+后继总数"降序竖排**（越多的越靠上，含跨学科）；小列宽 = 卡片宽 + 左右标签区（节点左侧放前置标签、右侧放后继标签）；行距自适应标签堆叠高。返回 TechLayout（Nodes + Bands + Rows + Width/Height）。
+- **TagStackHeight**(count) — 标签组堆叠高（count 个尖角框竖直排列）。
+- ⚠️ **Compute**(techs) — **旧"动态生成连线图"布局 = 失败的试验性产物，已隐藏（2026-08）**，仅存档保留不再调用（Kahn 传播/绕行/转向分道表/跳线/让位等连线算法全部废弃）。
+
+### `Stellaris.Engine/Technology/TechnologyRenderer.cs`（科技节点图渲染）
+
+- **RenderLabel**(layout, lang) — ✅ 当前唯一在用（**文本标签模式**）SkiaSharp 离屏渲染：3 行学科色六边形网格密铺背景（物理蓝/社会绿/工程黄，循环绘制无拼缝）+ 行顶学科色标题条（**贯穿整行**，白字"1阶"/"Tier N"按 tier 列位置分布）+ 学科色列竖线 + 行底学科色直线（**画在内容底部 2px，行间无白色空行**）+ 左右尖角框标签（**跟节点走**：前置框右缘贴节点左缘前 14px、后继框左缘贴节点右缘后 14px；前置文字左对齐、后继右对齐；**白色不透明底 + 边框/科技线 = 对应科技学科色**，宽 = min(字符宽+20, 190)）+ 卡片（节点构造未改动：边框 危险红>稀有紫>白、标题条大类色、左图标、描述、modifier、右侧学科图标+cost+levels）。无 WPF 依赖（可导出 PNG）。
+- **RenderLabelTile**(layout, x0, x1, y0, y1, lang) — 文本标签模式分块渲染（超大布局分批，防大位图崩溃）。
+- ⚠️ **Render** / **RenderTile** — **旧"动态生成连线图"渲染 = 失败的试验性产物，已隐藏（2026-08）**，仅存档保留不再调用。
+
+### `Stellaris.Engine/StrategicResource/StrategicResourceEngine.cs`（战略资源合并表）
+
+- **ResourceRelPath** — 固定路径 `common/strategic_resources/00_strategic_resources.txt`（唯一）。
+- **ScanAll**() — 初始化重扫描（幂等）：撞击扫描（GetCollisionAsts）→ 按顶层 key 合并超大表；块内同 key 字段多行、各记来源 root。
+- **GetEntries**() — 超大表（StrategicResourceEntry：Key + Rows(FieldKey/Value/IsBlock/Root) + Roots 去重）。
+
+### `Stellaris.Engine/EdictDecision/EdictDecisionEngine.cs`（法令/决议可视化——字段级保存）
+
+- **GetItems**(EdictDecisionKind kind) — 全部条目 = 扫描 common/edicts、common/decisions 现有 + 内存新建（按类型过滤；**删除登记项过滤**）。
+- 条目模型含：Length（无限/有限）、Cost/Upkeep（资源字典）、Potential/Allow（条件预设+自定义）、AiWeight、Effects；扫描解析 length/resources/potential/allow/ai_weight。
+- **AddItem**(EdictDecisionKind kind, string key) — 内存新建条目（不写盘）。
+- **RemoveItem**(EdictDecisionItem item) — **登记式删除**（新建项内存移除 + _removed 登记；保存时从文件 AST 移除块 + 删本地化词条——用户 2026-08：扫描项也可删）。
+- **MarkDirty**(item, field) / **MarkItemDirty**(item) — 字段级/条目级待保存登记（保存只写登记字段；空字段集 = 只写文件）。
+- **SaveAll**(modPrefix) — 统一保存（用户显式触发，SaveRunner）：删除块 + 字段级应用 dirty 块 + 本地化（edicts_/decisions_{ModPrefix}_l_{lang}.yml）+ 成功后清登记。
+- **TargetRelPath**(item, prefix) — 目标文件（SourceRelPath ?? 默认）。
+- **HasDirty** — 是否有待保存改动。
+- **LocalisedName**(item, uiLang, modLang) — 当前界面语言本地化显示名（english 回退 key）。
+
+
 ### `Stellaris.Engine/GalaxyMap/GalaxyMapEngine.cs`
 
 - **SetCoordinatePrecision**(int digits) — 设置坐标精度（0~6，超出裁剪；内部始终 double，仅序列化格式化，规范 2.3）。
@@ -244,6 +286,9 @@
 - **RebuildIndex**() — 重建索引
 - **ClearFrameCache**() — 清空帧缓存（按钮/预览帧）
 - **GetSpriteDefinition**(string name) — 按名获取精灵定义（texturefile 等）
+- **GetAllSpriteNames**() — 全部名称 → SourceFile（key → 所在 .gfx 相对路径）。
+- **GetGfxDdsFiles**() — gfx/ 目录递归扫描的全部 .dds 相对路径（经 SA 磁盘扫描——.dds 是二进制贴图不在配置索引；只记 .dds 后缀；懒扫缓存）。
+- **GetReferencedTextureFiles**() — 全部 spriteType 的 texturefile 引用集合（无视大小写——判断 .dds 是否被注册键引用）。
 - **GetGalaxySpriteFiles**() — 收集本 mod 内全部星系样式精灵（GFX_galaxy_*）所在的 gfx 文件（写回涉及文件，不做位置迁移）。 供保存时只写涉及文件；位置规整化（迁移）由 NormalizeSpriteFiles 单独执行。
 - **RemoveSprite**(string gfxPath, string name) — 删除条目（见代码）
 - **QuerySprite**(string name) — 按名查询精灵（含帧信息）
@@ -251,11 +296,38 @@
 - **NormalizeSpriteFiles**(string targetGfxPath) — 规整化精灵位置（仅内存，随保存落盘）： 本 mod 内所有星系样式精灵（名字以 GFX_galaxy_ 开头）应位于 targetGfxPath （interface/game_setup/{modPrefix}_galaxy_shapes.gfx，规范 14.5）。 - 精灵已在正确文件（mod 内）→ 待写； - 精灵在 mod 内其他 .gfx（错误文件名，如历史遗留 setup.gf…
 - **Dispose**() — 释放资源
 
+### `Stellaris.Engine/StaticModifier/StaticModifierEngine.cs`（加成字典——静态/自定义/基础 + 字段级保存）
+
+- 概念（用户体系）：静态加成（StaticModifierEntry）= common/static_modifiers 顶层块、自定义（BaseModifier IsScriptedDefinition）= common/scripted_modifiers 顶层块、基础（BaseModifier）= modifier 引用 + mod_ 本地化词条。
+- **ScanAll**() — 全量扫描（幂等；全程持锁）：static_modifiers 顶层块（静态）+ scripted_modifiers（自定义）+ 全 AST modifier 引用 + mod_ 词条 → 三类索引。
+- **GetAllBaseModifiers**() / **GetBaseModifier**(name) / **Search**(keyword) / **GetStaticModifiers**() / **GetItems**()（扫描现有 + 内存新建，**删除登记项过滤**）。
+- **BaseModifier.LocKey** — 真实本地化键（扫描记录实际命中词条键原样大小写，可能大写 MOD_ 前缀；无 mod_ 词条回退不带前缀键——不拼 mod_+Name，用户 2026-08）。
+- 特殊字段（StaticModifierEntry）：icon / icon_frame / hide_from_country_list / important / custom_tooltip / show_only_custom_tooltip（自身语义，不当引用）。
+- **AddItem**(key) — 内存新建（登记待保存）。**RemoveItem**(entry) — 登记式删除（保存时移出块 + 删本地化词条）。
+- **MarkDirty**(entry, field) / **MarkItemDirty**(entry) / **SetEntryRefs**(entry, refs) — 字段级/条目级待保存登记；引用键表写回。
+- **UpdateItemMeta** / **UpdateItemIcon** / **UpdateItemSourceFile** — 内存更新（特殊字段/图标/所属文件）。
+- **SaveAll**(modPrefix) — 统一保存（用户显式触发，SaveRunner）：删除块 + 字段级应用（OriginalBlock 保留未知字段）+ 本地化（modifiers_{ModPrefix}_l_{lang}.yml）+ 成功后清登记。
+- **TargetRelPath**(entry, prefix) / **HasDirty** — 目标文件（SourceFile ?? 默认）/ 是否有待保存改动。
+
+
 ### `Stellaris.Engine/SystemInitializer/SystemInitializerEngine.cs`
 
 - **GetAvailableInitializers**() — 扫描全部已加载的 common/solar_system_initializers/*.txt，收集星系预设（initializer）名。 经 StellarisAdapter 解析 AST（不直接读磁盘），取每个文件顶级 Block 的 key；返回去重排序列表。
 
 ## Stellaris.Parser
+
+### `Stellaris.Parser/StellarisAdapter.cs`（相对路径撞击扫描）
+
+- **PathCollisions** — 只读撞击表：relPath → 各 root 的 (Root, FullPath)。**ScanAll 时制作**（>1 个 root 撞同一相对路径才记录）。
+- **GetCollisionAsts**(string relativePath) — 撞击扫描（**上层主动开启**，非标准扫描的一部分）：指定相对路径 → 每个 root **独立解析**的 AST（不合并）；与常规 `_configResults` 完全隔离（不写入内部状态）。
+- **ParseConfigFile**(fullPath) — 内部：解析单个配置文件（Lexer + Parser，供撞击扫描用）。
+- **ReadTextFile**(relPath) — 读取任意文本文件（配置/导出专用——按覆盖规则找生效 root，找不到返回 null；不写内部状态）。
+- **WriteExportFile**(relPath, content) — 导出文档专用写盘（如 .md）：写 Roots 最后一位 + 自动建目录；**不占 FileCategory**（独立方法）。
+- **Key 提取半隐藏拓展**（App 初始化通用段 `RunKeyExtractIfConfigured`）：`.smt/_key_extract.json`（半隐藏）存在 → 扫描全部配置按 key 100% 匹配提取 block 顶级 Simple 键 / list 值去重 → 导出 `.smt/_key_extract.md`。详见 ParserSpecification「特殊兼容性支持」。
+- **WriteCollisionFile**(relPath, root, nodes) — 撞击保存：把指定 root 的 relPath 文件 AST 序列化写盘（引擎经此落盘——不直接操作底层）。
+- **CLI Extension v3.2**（`Stellaris.Extension`，规则 JSON 驱动）：步骤 extract / modify / write / **add**（创建节点，`position`=Append|Before|After + `existing` 原地替换）/ **delete** / **save**（显式落盘 roots[-1]）/ clear；**foreach** over 支持数值范围 `"0..1999"` + 模板表达式 `{expr:...}`（整数算术/数组索引/三元——TemplateMath）；add/delete 可 `save=false` 批量改内存后统一 save。权威规范见 `Stellaris.Extension/ExtensionSpecification.cs`。
+
+
 
 ### `Stellaris.Parser/AstNodes.cs`
 
@@ -334,6 +406,8 @@
 - **GetLocalisationFilePaths**(string lang) — 指定语言下**涉及写入**的全部文件（键的 CurrentPath 与 OldPath 并集）。 供保存时"统计目前/过去文件名 → 逐个写 CurrentPath 键值对"使用。
 - **HasLocalisationKeysInPath**(string lang, string path) — 指定语言下，该文件是否存在 CurrentPath 匹配的键（用于判断"纯旧文件"）。
 - **GetConfig**(string relPath) — 获取指定相对路径的 AST（ParserResult）
+- **ParseSingleNode**(string text) — 【SA 基础服务·统一解析】解析单条 `key = 值` / `key = { ... }` 文本 → 单节点（Simple/Block/List）。 各引擎"字段原文 → AST 节点"统一经此（法令/科技/战略资源共用——2026-08 曾各自重复 new Lexer/Parser）；调用方自行校验节点 Key；解析失败返回 null。
+- **SerializeNodes**(IReadOnlyList<AstNode> nodes) — 【SA 基础服务·统一序列化】节点列表 → 文本（**完整递归序列化**：嵌套块/注释/格式全保留）。 各引擎"块 → 文本"统一经此（禁止自行拼文本/简写嵌套块——科技 BlockToText 曾因简写丢内容，2026-08）。
 - **WriteFile**(string relPath, string? targetRoot = null) — 写回指定文件（引擎经此落盘）
 - **WriteAllFiles**() — 一次性落盘全部待保存文件（文件表）
 - **WriteLocalisation**(string lang, string fileName, string? targetRoot = null, bool writeIfEmpty = false) — 将内存中指定本地化文件的数据写入 YML 文件。 从 _localisationTable[lang] 中筛选 CurrentPath == targetPath 的条目。 写入成功后，将该文件所有条目的 OldPath 更新为 targetPath。 语言标识（如 "english"） YML 文件名（如 "mod_galaxy_shapes.yml"） 可选目标根目录，未指定则使用 Ro…
@@ -341,6 +415,11 @@
 ### `Stellaris.Parser/StellarisAdapter_CRUD.cs`
 
 - **CreateEmptyFileInMemory**(string relativePath, FileCategory category) — 在指定的内存缓存中创建一个空的容器条目。 对于 Localisation 类型，此方法确保 _localisationTable 中存在该语言的字典。
+- **SelectNodes**(string relativePath, List<object> path) — 【正向节点查询】按**标准选择路径**（SelectorResolver 规范：枝序列逐层推进）选择节点，返回 SelectResult（Hits + Errors 内存告知，不抛异常）。路径元素必须是枝（字典）：`{ "mode": "Block", "match": { "rule": [ 叶或枝... ], "check_rule": "And" } }` 或 `{ "mode": "Block", "index": 2 }`（1 起）。叶 = `{ "target": "key|value", "keywords": [...], "type": "equals|start|end|contains" }` 或 `{ "index": 2 }`。
+- **AddConfigNode**(string relativePath, List<object> parentPath, AstNode newNode, Func<AstNode,bool>? existingPredicate = null, AddPosition position = AddPosition.Append) — 在 parentPath 定位的父节点（Block/List）下添加节点；已存在按 Key 同名更新。 position=Append（缺省）：定位父节点，新节点追加到 children 末尾；position=Before/After：parentPath 定位**目标节点本身**（list/simple/block），新节点插入到目标同层前/后（目标不存在静默返回、多个抛异常）。 parentPath 用标准选择路径。
+- **RemoveConfigNode**(string relativePath, List<object> targetPath) — 删除标准选择路径定位到的节点（路径须为标准字典枝序列；旧 string/元组/int 简写已废弃——用 LegacySelectorResolver）。 若定位到多个节点，抛出 InvalidOperationException。
+- **RenameKey**(string relativePath, List<object> targetPath, string newKey) — 重命名标准选择路径定位到的节点的 Key（Simple/Block/List 均可）。 Key 与值独立（RawText 只记录值的原始文本，不含 Key）——改名不影响值，Value/RawText 保留；定位到多个节点抛异常，定位不到静默返回。
+- **UpdateConfigNode**(string relativePath, List<object> targetPath, AstNode newNode, bool fullReplace = false, Func<AstNode,bool>? targetPredicate = null) — 更新标准选择路径定位到的节点（增量仅 Simple；fullReplace 整体替换）。
 - **RemoveConfigNode**(string relativePath, List<object> targetPath) — 删除指定文件 AST 中由路径定位到的节点。 若定位到多个节点，抛出 InvalidOperationException。
 - **AddLocalisationEntry**(string lang, string path, string key, string value, string? root = null, string? oldPath = null) — 16.5.1 添加本地化条目。 若 key 已存在且新 root 优先级更高，则覆盖；否则抛出异常。
 - **RemoveLocalisationEntry**(string lang, string path, string key) — 16.5.2 删除本地化条目。 仅当条目的 CurrentPath == path 时才删除，否则静默返回。
@@ -405,6 +484,18 @@
 
 - **SetMap**(string mapName) — 动态地图页切换过来时选中指定静态地图（输出接口）。
 - **Refresh**() — 导航切到本页时刷新（重读点精度设置等）。
+
+### `Stellaris.Editor/Pages/MapIndexPage.cs`（地图壳页，用户 2026-08）
+
+- 选项卡（内容 = 列表+搜索+🔍，嵌入右编辑区原列表位置）："地图" = 动态混排列表（动态+静态，点静态 → 同页显示静态预览/参数，静态列表不单独出现）；"星系样式" = 样式列表+搜索。三页实例叠放（预览+参数 = 原本内容），切页时选项卡随显示页移动；横向（右编辑区宽度）/竖向（列表区高度）尺寸调整**三页通用**（ActualWidth/ActualHeight 像素同步）。
+
+### `Stellaris.Editor/Pages/DictionaryIndexPage.cs`（索引页，用户 2026-08）
+
+- 语言字典 + 加成字典 + 图形索引 3 选项卡（语言/加成/图形），各自搜索框不共用；三页列宽（左导航/中列表/右详情）调整通用。
+
+### `Stellaris.Editor/Pages/SpriteIndexPage.cs`（图形选项卡，用户 2026-08）
+
+- 左导航 3 选项（全部/注册键/路径）；列表 = 注册键 + 未引用 .dds 路径（被引用的不单独显示）；详情 = 注册键（如有）+ 相对路径 + 图像预览（注册键按 NoOfFrames 切帧垂直排列、文件整图，横向占满、纵向滚动）。
 
 ### `Stellaris.Editor/StatusOverlay.xaml.cs`
 

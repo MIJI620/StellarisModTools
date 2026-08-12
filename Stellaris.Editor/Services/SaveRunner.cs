@@ -4,6 +4,7 @@
 //   完成自动关闭 + 仅失败才弹警告框。禁止各处自行 MessageBox 完成提示。
 
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 
@@ -18,6 +19,10 @@ namespace Stellaris.Editor;
 /// </summary>
 public static class SaveRunner
 {
+    /// <summary>保存进度窗口最短可见时间（ms）：保存太快（如单文件格式化）时窗口一闪而过/黑块，
+    /// 用户看不到旋转动画（2026-08 反馈）——完成后至少再停留片刻再关闭。</summary>
+    private const int MinVisibleMs = 600;
+
     /// <summary>执行一次规范格式的保存。</summary>
     /// <param name="services">引擎服务（取本地化文案）。</param>
     /// <param name="statusKey">进度窗口文案的本地化键（如 "status.saving"）。</param>
@@ -34,16 +39,23 @@ public static class SaveRunner
         {
             try
             {
+                var start = DateTime.UtcNow;
                 bool ok = work();
+                // 旋转窗口至少可见片刻（保存太快时保证动画被看到）
+                var elapsed = (DateTime.UtcNow - start).TotalMilliseconds;
+                if (elapsed < MinVisibleMs)
+                    Thread.Sleep((int)(MinVisibleMs - elapsed));
                 Application.Current.Dispatcher.Invoke(() =>
                 {
-                    progress.Close();
                     if (ok)
                     {
+                        // 先执行收尾（可能含页面重建——转圈保持到重建完再关，用户 2026-08）
                         onSuccess?.Invoke();
+                        progress.Close();
                     }
                     else
                     {
+                        progress.Close();
                         MessageBox.Show(failMessage ?? services.Localisation.Get("status.save_failed"),
                             "Stellaris Mod Tools", MessageBoxButton.OK, MessageBoxImage.Warning);
                     }

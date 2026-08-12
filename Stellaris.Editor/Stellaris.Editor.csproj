@@ -10,6 +10,8 @@
 	</PropertyGroup>
 	<ItemGroup>
 		<PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+		<PackageReference Include="MdXaml" Version="1.27.0" />
+		<PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.10" />
 		<PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.10" />
 		<PackageReference Include="SkiaSharp" Version="4.150.0" />
 	</ItemGroup>
@@ -18,7 +20,8 @@
 	</ItemGroup>
 	<ItemGroup>
 		<None Include="localisation\**" CopyToOutputDirectory="PreserveNewest" />
-		<Resource Include="../icon/群星模组工具_96x96.png" Link="Resources/app_icon.png"
-		         Condition="Exists('../icon/群星模组工具_96x96.png')" />
+		<Resource Include="../icon/群星模组工具_96x96.png" Link="Resources/app_icon.png" Condition="Exists('../icon/群星模组工具_96x96.png')" />
+		<None Include="rules/modifier_exclusions.json" CopyToOutputDirectory="PreserveNewest" />
+		<None Include="rules/overwrite_rules.json" CopyToOutputDirectory="PreserveNewest" />
 	</ItemGroup>
 </Project>

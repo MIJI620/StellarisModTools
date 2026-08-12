@@ -130,16 +130,22 @@ internal sealed class ImageLoader : IDisposable
     private SKBitmap? DecodeImage(string fullPath)
     {
         string ext = Path.GetExtension(fullPath).ToLowerInvariant();
-        if (ext == ".png")
+        // PNG/JPEG/BMP/WebP/GIF 走 Skia 原生解码（无互操作越界风险；PNG 为主，bmp/WebP 兼容）
+        switch (ext)
         {
-            using var stream = File.OpenRead(fullPath);
-            return SKBitmap.Decode(stream);
+            case ".png":
+            case ".jpg":
+            case ".jpeg":
+            case ".bmp":
+            case ".webp":
+            case ".gif":
+                using (var stream = File.OpenRead(fullPath))
+                    return SKBitmap.Decode(stream);
+            case ".dds":
+                return DecodeDds(fullPath);
+            default:
+                return null;
         }
-        else if (ext == ".dds")
-        {
-            return DecodeDds(fullPath);
-        }
-        return null;
     }
 
     private SKBitmap? DecodeDds(string fullPath)
@@ -154,13 +160,39 @@ internal sealed class ImageLoader : IDisposable
             int width = image.Width;
             int height = image.Height;
             int stride = image.Stride;
+            if (width <= 0 || height <= 0 || stride <= 0)
+                return null;
+
+            int rowBytes = width * 4;                       // Rgba8888 每行字节数
+            long need = (long)rowBytes * height;            // 目标位图总字节数
+            if (need > int.MaxValue)
+                return null;                                // 超大位图拒绝
 
             if (image.Format == Pfim.ImageFormat.Rgba32)
             {
+                // Pfim Rgba32 的内存字节序为 BGRA（DDS 惯例：字节 B,G,R,A）——交换 R/B 输出标准 RGBA
+                // （PixelSet/页面统一 RGBA 约定）；同时跳过 stride padding，绝不越界。
                 var info = new SKImageInfo(width, height, SKColorType.Rgba8888, SKAlphaType.Unpremul);
                 var bitmap = new SKBitmap(info);
                 IntPtr ptr = bitmap.GetPixels();
-                Marshal.Copy(data, 0, ptr, data.Length);
+                byte[] rgba = new byte[(int)need];
+                for (int y = 0; y < height; y++)
+                {
+                    int src = y * stride;
+                    int dst = y * rowBytes;
+                    for (int x = 0; x < width; x++)
+                    {
+                        int s = src + x * 4;
+                        int d = dst + x * 4;
+                        if (s + 3 >= data.Length)
+                            break;
+                        rgba[d] = data[s + 2];     // R ← B
+                        rgba[d + 1] = data[s + 1]; // G
+                        rgba[d + 2] = data[s];     // B ← R
+                        rgba[d + 3] = data[s + 3]; // A
+                    }
+                }
+                Marshal.Copy(rgba, 0, ptr, (int)need);
                 return bitmap;
             }
             else if (image.Format == Pfim.ImageFormat.Rgb24)
@@ -173,25 +205,28 @@ internal sealed class ImageLoader : IDisposable
                     int dstIdx = y * width * 4;
                     for (int x = 0; x < width; x++)
                     {
+                        if (srcIdx + 2 >= data.Length)
+                            break;                          // 源数据不足（防御），剩余填充 0
                         rgba[dstIdx++] = data[srcIdx++];
                         rgba[dstIdx++] = data[srcIdx++];
                         rgba[dstIdx++] = data[srcIdx++];
                         rgba[dstIdx++] = 255;
                     }
                 }
-                var info = new SKImageInfo(width, height, SKColorType.Rgba8888, SKAlphaType.Unpremul);
-                var bitmap = new SKBitmap(info);
-                IntPtr ptr = bitmap.GetPixels();
-                Marshal.Copy(rgba, 0, ptr, byteCount);
-                return bitmap;
+                var info2 = new SKImageInfo(width, height, SKColorType.Rgba8888, SKAlphaType.Unpremul);
+                var bitmap2 = new SKBitmap(info2);
+                IntPtr ptr2 = bitmap2.GetPixels();
+                Marshal.Copy(rgba, 0, ptr2, byteCount);
+                return bitmap2;
             }
             else
             {
-                int byteCount = data.Length;
+                // 未知格式：只复制与目标容量一致的部分（绝不越界写）
                 var info = new SKImageInfo(width, height, SKColorType.Rgba8888, SKAlphaType.Unpremul);
                 var bitmap = new SKBitmap(info);
                 IntPtr ptr = bitmap.GetPixels();
-                Marshal.Copy(data, 0, ptr, byteCount);
+                int copyLen = (int)Math.Min(data.Length, need);
+                Marshal.Copy(data, 0, ptr, copyLen);
                 return bitmap;
             }
         }

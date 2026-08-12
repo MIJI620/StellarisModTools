@@ -1,4 +1,4 @@
-// 文件: Stellaris.Editor/Pages/GalaxyStylePage.xaml.cs
+﻿// 文件: Stellaris.Editor/Pages/GalaxyStylePage.xaml.cs
 // 星系样式页（规范 5.1-b）：
 //   - 左：形状预览（1:1 等比，边长 = min(高×80%, 宽×50%)；只底色 +
 //     极坐标网格（间隔 50 / 半径 500，无 0° 水平线）；颜色可由"颜色"页调整）
@@ -48,16 +48,22 @@ public partial class GalaxyStylePage : UserControl
     };
 
     private readonly EngineServices _services;
+    private System.Windows.Threading.DispatcherTimer _styleDebounce = null!;   // 搜索框 2 秒防抖
     private string? _currentStyleName;
 
     // 拖拽排序状态（支持多选组拖拽）
     private Point _dragStart;
     private readonly List<StyleListItem> _dragItems = new();
+    /// <summary>全部样式项（列表搜索过滤的底层数据——ReloadStyles 时备份完整顺序）。</summary>
+    private readonly List<StyleListItem> _allStyleItems = new();
 
     public GalaxyStylePage(EngineServices services)
     {
         _services = services;
         InitializeComponent();
+        StyleFilterBox.ToolTip = _services.Localisation.Get("common.list_search");
+        StyleFilterSearchButton.ToolTip = _services.Localisation.Get("common.list_search");
+        _styleDebounce = Stellaris.Editor.Controls.SearchDebouncer.Attach(StyleFilterBox, () => OnStyleFilterSearch(this, new RoutedEventArgs()));
 
         var loc = services.Localisation;
         PreviewTitle.Text = loc.Get("style.preview.title");
@@ -235,20 +241,78 @@ public partial class GalaxyStylePage : UserControl
         if (engine == null)
             return;
 
+        // 全部样式项（搜索过滤的底层数据——保持完整顺序）
+        _allStyleItems.Clear();
         foreach (var name in engine.GetAllStyleNames())
         {
             // 样式名本地化：UI 语言 → mod 本地化语言 → english → 回退 key
             string uiLang = _services.Localisation.CurrentLanguage;
-            string display = engine.GetLocalisedText(name, MapUiLangToModLang(uiLang))
+            string display = engine.GetLocalisedText(name, UILocalisationManager.MapUiLangToModLang(uiLang))
                              ?? engine.GetLocalisedText(name, "english")
                              ?? name;
-            StyleList.Items.Add(new StyleListItem(name, display));
+            _allStyleItems.Add(new StyleListItem(name, display));
         }
+        ApplyStyleFilter(keepSelection: false);
         if (StyleList.Items.Count > 0)
             StyleList.SelectedIndex = 0;
     }
 
     // ===== 样式选择 / 拖拽排序 =====
+
+    /// <summary>列表搜索按钮：按输入值过滤（匹配 Name 键 或 本地化显示名，忽略大小写）。</summary>
+    /// <summary>列表搜索框回车：普通回车 → 触发搜索；Shift+回车 → 插入 \\n（统一）。</summary>
+    private void OnFilterBoxKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == System.Windows.Input.Key.Enter)
+        {
+            if ((System.Windows.Input.Keyboard.Modifiers & System.Windows.Input.ModifierKeys.Shift) != 0)
+            {
+                e.Handled = true;
+                var box = (System.Windows.Controls.TextBox)sender;
+                var idx = box.CaretIndex;
+                box.Text = box.Text.Insert(idx, "\\n");
+                box.CaretIndex = idx + 2;
+                return;
+            }
+            e.Handled = true;
+            _styleDebounce.Stop();   // 手动搜索后停止防抖计时器（防 2 秒后重复触发）
+            OnStyleFilterSearch(this, new RoutedEventArgs());
+        }
+    }
+
+    private void OnStyleFilterSearch(object sender, RoutedEventArgs e)
+    {
+        ApplyStyleFilter(keepSelection: true);
+    }
+
+    /// <summary>应用样式列表过滤；输入为空时恢复全部。keepSelection=true 时按当前选中键找回选中。</summary>
+    private void ApplyStyleFilter(bool keepSelection)
+    {
+        string? keepName = null;
+        if (keepSelection && StyleList.SelectedItem is StyleListItem cur)
+            keepName = cur.Name;
+
+        StyleList.Items.Clear();
+        var pat = StyleFilterBox?.Text?.Trim();
+        foreach (var item in _allStyleItems)
+        {
+            if (string.IsNullOrEmpty(pat)
+                || item.Name.Contains(pat, StringComparison.OrdinalIgnoreCase)
+                || item.Display.Contains(pat, StringComparison.OrdinalIgnoreCase))
+                StyleList.Items.Add(item);
+        }
+        if (keepName != null)
+        {
+            for (int i = 0; i < StyleList.Items.Count; i++)
+            {
+                if (StyleList.Items[i] is StyleListItem sli && sli.Name == keepName)
+                {
+                    StyleList.SelectedIndex = i;
+                    break;
+                }
+            }
+        }
+    }
 
     private void OnStyleSelected(object sender, SelectionChangedEventArgs e)
     {
@@ -544,104 +608,32 @@ public partial class GalaxyStylePage : UserControl
 
     private FrameworkElement BuildLocalisationBox(GalaxyStyleDefinition def)
     {
+        // 统一本地化组件（LocalisationEditBox）：边框 + 语种下拉 + 名称/描述（逻辑值可编辑 → 显示值只读）
         var engine = _services.StyleEngine!;
-        var loc = _services.Localisation;
-        // 语种下拉选项 = "启用语言"（统一语种，由模组设置"启用语言"决定）
-        var langs = engine.GetEnabledLanguages();
-
-        // 语种下拉：显示当前界面语言下的译名（统一语种，如中文界面 english → "英语"）
-        var langCombo = new ComboBox { Margin = new Thickness(0, 0, 0, 4), HorizontalAlignment = HorizontalAlignment.Stretch };
-        foreach (var l in langs)
+        var box = new LocalisationEditBox
         {
-            langCombo.Items.Add(new ComboBoxItem { Content = loc.GetLanguageDisplayNameLocalized(l), Tag = l });
-        }
-        string cur = loc.CurrentLanguage;
-        string mapped = MapUiLangToModLang(cur);
-        string selected = langs.Contains(mapped) ? mapped
-            : (langs.Contains("english") ? "english" : langs.FirstOrDefault() ?? string.Empty);
-        foreach (object o in langCombo.Items)
-        {
-            if (o is ComboBoxItem it && it.Tag is string code && code == selected)
+            Adapter = _services.Adapter,
+            GetNameKey = () => def.Name,
+            GetDescKey = () => def.Parameters.DescKey,   // 星系样式描述键可自定义——不能假设 {name}_desc
+            GetLangs = () => engine.GetEnabledLanguages(),
+            // 引擎版保存：含 MarkLocalisationDirty（统一保存落盘）
+            SaveLocalisation = (lang, key, text) =>
             {
-                langCombo.SelectedItem = it;
-                break;
+                try
+                {
+                    if (key == def.Name)
+                        engine.UpdateLocalisation(def.Name, lang, newTitle: text);
+                    else
+                        engine.UpdateLocalisation(def.Name, lang, newDescKey: key, newDescText: text);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"UpdateLocalisation failed: {ex.Message}", "Stellaris Mod Tools");
+                }
             }
-        }
-
-        string currentName = def.Name;
-        string currentLang = selected;
-
-        // 样式名：逻辑值（可编辑）/ 显示值（纯文本，只读）
-        var nameLogicalBox = new TextBox { Margin = new Thickness(0, 0, 0, 4) };
-        var nameDisplayText = new TextBlock
-        {
-            Margin = new Thickness(0, 0, 0, 4),
-            TextWrapping = TextWrapping.Wrap,
-            MaxHeight = 60,
-            Foreground = System.Windows.Media.Brushes.Gray
         };
-        // 描述：逻辑值（可编辑）/ 显示值（纯文本，只读）
-        var descLogicalBox = new TextBox
-        {
-            AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, Height = 48,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Margin = new Thickness(0, 0, 0, 4)
-        };
-        var descDisplayText = new TextBlock
-        {
-            Margin = new Thickness(0, 0, 0, 4),
-            TextWrapping = TextWrapping.Wrap,
-            MaxHeight = 60,
-            Foreground = System.Windows.Media.Brushes.Gray
-        };
-
-        void Fill(string lang)
-        {
-            currentLang = lang;
-            nameLogicalBox.Text = engine.GetLocalisedLogicalText(currentName, lang) ?? currentName;
-            nameDisplayText.Text = engine.GetLocalisedText(currentName, lang) ?? currentName;
-            string descKey = def.Parameters.DescKey ?? $"{currentName}_desc";
-            descLogicalBox.Text = engine.GetLocalisedLogicalText(descKey, lang) ?? string.Empty;
-            descDisplayText.Text = engine.GetLocalisedText(descKey, lang) ?? string.Empty;
-        }
-
-        if (langCombo.SelectedItem is ComboBoxItem first && first.Tag is string firstLang)
-            Fill(firstLang);
-        langCombo.SelectionChanged += (_, _) =>
-        {
-            if (langCombo.SelectedItem is ComboBoxItem item && item.Tag is string l)
-                Fill(l);
-        };
-
-        // 逻辑值编辑 → 更新本地化（逻辑值原文），并刷新显示值
-        nameLogicalBox.LostFocus += (_, _) =>
-        {
-            try { engine.UpdateLocalisation(currentName, currentLang, newTitle: nameLogicalBox.Text); }
-            catch (Exception ex) { MessageBox.Show($"UpdateLocalisation failed: {ex.Message}", "Stellaris Mod Tools"); }
-            Fill(currentLang);
-        };
-        descLogicalBox.LostFocus += (_, _) =>
-        {
-            try { engine.UpdateLocalisation(currentName, currentLang, newDescText: descLogicalBox.Text); }
-            catch (Exception ex) { MessageBox.Show($"UpdateLocalisation failed: {ex.Message}", "Stellaris Mod Tools"); }
-            Fill(currentLang);
-        };
-
-        // 布局：语种下拉 + 样式名（逻辑/显示）+ 描述（逻辑/显示）
-        var panel = new StackPanel();
-        panel.Children.Add(langCombo);
-        panel.Children.Add(BuildLocRow(loc.Get("style.loc.name_logical"), nameLogicalBox));
-        panel.Children.Add(BuildLocRow(loc.Get("style.loc.name_display"), nameDisplayText));
-        panel.Children.Add(BuildLocRow(loc.Get("style.loc.desc_logical"), descLogicalBox));
-        panel.Children.Add(BuildLocRow(loc.Get("style.loc.desc_display"), descDisplayText));
-
-        return new Border
-        {
-            BorderBrush = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
-            BorderThickness = new Thickness(1),
-            Margin = new Thickness(2, 6, 2, 8),
-            Padding = new Thickness(6),
-            Child = panel
-        };
+        box.Reload();
+        return box;
     }
 
     /// <summary>本地化编辑行：标签（左侧定宽）+ 控件（填充）。</summary>
@@ -663,23 +655,6 @@ public partial class GalaxyStylePage : UserControl
         grid.Children.Add(control);
         return grid;
     }
-
-    /// <summary>UI 语言代码 → 群星 mod 本地化语言代码（如 zh-CN → simp_chinese）。</summary>
-    private static string MapUiLangToModLang(string uiLang) => uiLang.ToLowerInvariant() switch
-    {
-        "zh-cn" or "zh-hans" or "zh" => "simp_chinese",
-        "zh-tw" or "zh-hant" => "trad_chinese",
-        "en" or "en-us" => "english",
-        "ja" or "ja-jp" => "japanese",
-        "ko" or "ko-kr" => "korean",
-        "fr" or "fr-fr" => "french",
-        "de" or "de-de" => "german",
-        "es" or "es-es" => "spanish",
-        "ru" or "ru-ru" => "russian",
-        "pt" or "pt-br" => "braz_por",
-        "pl" or "pl-pl" => "polish",
-        _ => uiLang.ToLowerInvariant()
-    };
 
     // ===== 第 3 页：颜色 =====
 

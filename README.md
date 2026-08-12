@@ -1,31 +1,32 @@
 # 群星模组工具 / StellarisModTools
 
-群星（Stellaris）模组工具——星系样式与地图可视化编辑器。
+**V0.2** —— 开源免费的群星（Stellaris 4.x）模组可视化编辑工具：星系样式、地图、法令/决议/静态加成、科技、本地化与资源可视化编辑。
 
-A Stellaris (4.x) mod tool — visual galaxy style & map editor.
+**GitHub**：<https://github.com/MIJI620/StellarisModTools> ｜ **反馈 / 交流**：GitHub Issues
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## 功能 / Features
+## 开发历程
 
-- **星系样式**：创建 / 编辑 / 复制 / 删除样式，形状参数可视化调参，自动导出预览图与按钮图标（按精灵表路径落盘）
-- **动态 / 静态地图**：混排列表双向切换；点集编辑器（加点 / 删除 / 框选 / 多选拖动 / 镜像 / 旋转 / 超空间航道）；加载集合（多套根目录预设，切换即重载）
-- **本地化**：中 / 英一键切换（界面语言 endonym 显示）；本地化键逻辑值 / 显示值分离
-- **保存 / 规整化**：统一保存（转圈进度、仅失败弹窗）；"全部规整化"只改内存、保存时统一落盘
-- **导出**：按样式增量导出（哈希比较），静态地图导出设计点集
+本工具的最初开发源自 2021 年左右的一个群星舰船制作器——当时只是想做一个便捷的可视化舰船组件制作工具，后因长期未维护且性能过差而停更；2026 年重新开始开发，先尝试用 Python，再次遇到性能瓶颈，最终转向 C#。
 
-## 解析器特性 / Parser Highlights
+## 导航功能 / Navigation & Features
 
-- **相邻双引号配对**（用户实测原版确认）：通用代码文件（`.txt` / `.gfx`）中字符串从第一个 `"` 读到**下一个** `"` 即终止——`from = "07" to = "03"` 解析为**两条独立赋值**（非贪婪合并）
-- **本地化 yml 行贪婪**：值 = 第一个 `"` 到行内最后一个 `"`（`LocalisationParser`，不走 Lexer，互不干扰）
-- **抗爆炸**：遇到坏 token（未闭合引号 / 多余闭括号 / 非法键）不崩溃——记录错误行、跳过、继续解析（与游戏行为一致）
+- **综合**：法令 / 星球决议 / 静态加成 / 战略资源 4 个选项卡；法令与决议字段级保存（所属文件可指定）；静态加成字段级保存（本地化 `modifiers_{ModPrefix}_l_{lang}.yml`）
+- **科技**：节点图（文本标签模式）+ 搜索 + 右键新建/修改/删除/保存/导出（分块渲染防 OOM）；字段级保存 + 格式化省略（未知字段保留）
+- **地图**：壳页 2 选项卡（地图 = 动态/静态整页叠放、星系样式 = 样式页整页叠放），选项卡只包列表+搜索那一小块；右编辑区统一 420px，横/纵尺寸调整三页通用
+- **索引**：语言字典（按 key 去重 + 详情本地化组件）/ 加成字典（本地化复用组件、真实键 LocKey）/ 图形索引（gfx .dds + 注册键分类 + 切帧预览）；三页列宽调整通用
+- **设置**：目录集合管理（重载入该集合、导入启动器集合）、界面语言切换、模组前缀、帮助（大文本块）、关于
+- **保存规范**：所有保存必须显式登记（pending），用户显式触发（右键"保存"/保存按钮）才落盘，经 SaveRunner；统一写 roots[-1] + 自动建目录
 
 ## 构建 / Build
 
 ```bash
 dotnet build Stellaris.Editor/Stellaris.Editor.csproj -v q
-dotnet run --project Stellaris.Tests/Stellaris.Tests.csproj -v q   # 38 项测试
+dotnet run --project Stellaris.Tests/Stellaris.Tests.csproj -v q   # 168 项测试
 ```
+
+完整公开 API 功能索引见 [README-API-INDEX.md](README-API-INDEX.md)。
 
 ## 许可 / License
 

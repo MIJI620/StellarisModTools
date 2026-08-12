@@ -24,9 +24,21 @@ public static class SerializationHelper
             SerializeNode(node, sb, 0);
 
             if (i < nodes.Count - 1)
-                sb.Append("\n\n");
+                sb.Append(RootSeparator(node, nodes[i + 1]));
         }
         return sb.ToString();
+    }
+
+    /// <summary>根节点间距规则（用户定义，2026-08）：只有"2 个不同类型节点"或"2 个 Block"之间
+    /// 才多空一行；相同类型非 Block（如 @a=1 @b=2 两个 Simple）紧挨一行。
+    /// 注意：SerializeNode 输出自带行尾换行，因此分隔符返回 ""（紧挨）或 "\n"（补 1 空行）。</summary>
+    private static string RootSeparator(AstNode prev, AstNode next)
+    {
+        if (prev.Type == NodeType.Comment || next.Type == NodeType.Comment)
+            return "";
+        bool sameType = prev.Type == next.Type;
+        bool bothBlock = prev.Type == NodeType.Block && next.Type == NodeType.Block;
+        return !sameType || bothBlock ? "\n" : "";
     }
 
     private static void SerializeNode(AstNode node, StringBuilder sb, int indentLevel)
@@ -139,7 +151,7 @@ public static class SerializationHelper
             {
                 if (child.Type == NodeType.Simple && !string.IsNullOrEmpty(child.Key))
                 {
-                    parts.Add($"{child.Key} = {FormatSimpleValue(child)}");
+                    parts.Add($"{child.Key} {GetSeparatorString(child.SeparatorType)} {FormatSimpleValue(child)}");
                 }
                 else if (child.Type == NodeType.Simple && string.IsNullOrEmpty(child.Key))
                 {
@@ -333,18 +345,30 @@ public static class SerializationHelper
         return FormatValue(node?.Value, node?.IsQuoted ?? false);
     }
 
-    public static void WriteFile(string filePath, string content)
+    public static void WriteFile(string filePath, string content, string? encoding = null)
     {
         if (string.IsNullOrEmpty(filePath))
             throw new ArgumentNullException(nameof(filePath));
 
-        // 编码规范：仅本地化 .yml 用带 BOM 的 UTF8；其他文本文件（.txt/.gfx/.json 等）用标准 UTF8（无 BOM）
-        var encoding = filePath.EndsWith(".yml", StringComparison.OrdinalIgnoreCase)
-            ? Encoding.UTF8
-            : new UTF8Encoding(false);
+        // 编码规范：仅本地化 .yml 用带 BOM 的 UTF8；其他文本文件（.txt/.gfx/.json 等）用标准 UTF8（无 BOM）。
+        // encoding 显式指定时覆盖扩展名规则："utf-8"（无 BOM）/ "utf-8-bom"（带 BOM）。
+        var enc = encoding?.ToLowerInvariant();
+        Encoding? chosen = enc switch
+        {
+            "utf-8" => new UTF8Encoding(false),
+            "utf-8-bom" => Encoding.UTF8,
+            null => null,   // 缺省 → 按扩展名规则
+            _ => throw new ArgumentException($"未知编码: {encoding}（支持 utf-8 / utf-8-bom）")
+        };
+        if (chosen == null)
+        {
+            chosen = filePath.EndsWith(".yml", StringComparison.OrdinalIgnoreCase)
+                ? Encoding.UTF8
+                : new UTF8Encoding(false);
+        }
 
         string tempPath = filePath + ".temp";
-        File.WriteAllText(tempPath, content, encoding);
+        File.WriteAllText(tempPath, content, chosen);
         if (File.Exists(filePath))
             File.Delete(filePath);
         File.Move(tempPath, filePath);

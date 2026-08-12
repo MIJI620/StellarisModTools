@@ -156,6 +156,16 @@
  *     IReadOnlyDictionary<string, string> GetAllSpriteNames()
  *       返回 名称 → SourceFile 的只读副本；异常时返回空字典并置 UnknownError。
  *
+ * 4.4-b 查询 gfx/ 目录 .dds 文件（GetGfxDdsFiles，用户 2026-08）
+ *     IReadOnlyList<string> GetGfxDdsFiles()
+ *       经 SA 磁盘扫描（GetBinaryFilesRecursive("gfx", "*.dds")——.dds 是二进制贴图不在配置索引）：
+ *       gfx/ 目录递归全部 .dds 相对路径（只记 .dds 后缀，其他一律不管）；懒扫缓存。
+ *       供"图形"可视化列表：未引用文件条目 = 本列表 − GetReferencedTextureFiles。
+ * 4.4-c 查询全部 texturefile 引用（GetReferencedTextureFiles）
+ *     IReadOnlySet<string> GetReferencedTextureFiles()
+ *       全部 spriteType 的 texturefile 引用集合（无视大小写——判断 .dds 是否被注册键引用；
+ *       被引用的 .dds 不单独显示）。
+ *
  * 4.5 添加精灵（AddSprite）
  *     bool AddSprite(string gfxPath, string name, string textureFile,
  *                    int? noOfFrames = null, OperationMode mode = OperationMode.Overwrite,

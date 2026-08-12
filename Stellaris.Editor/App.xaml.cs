@@ -19,6 +19,9 @@ public partial class App : Application
     /// <summary>应用级服务容器（OnStartup 初始化，重载入流程复用）。</summary>
     private EngineServices? _services;
 
+    /// <summary>当前界面本地化管理器（静态——供无参构造的 XAML 转换器延迟获取）。</summary>
+    public static UILocalisationManager? CurrentLocalisation { get; set; }
+
     /// <summary>关闭窗口/退出程序时自动保存程序 config 文件夹的全部用户配置（当前为 user_prefs.json）；
     /// 若本次使用了 explode 兜底目录（UI 隐藏），关闭时弹窗告知并给出"打开文件夹"按钮。</summary>
     protected override void OnExit(ExitEventArgs e)
@@ -113,12 +116,18 @@ public partial class App : Application
 
         var services = new EngineServices();
         _services = services;
+        CurrentLocalisation = services.Localisation;
 
         // 阶段 0：界面本地化载入
         services.Localisation.Load();
 
         // 阶段 1：偏好设置读取（偏好语言不可用时保持默认，防御性）
         services.Preferences = UserPreferences.Load();
+        // 界面统一字号：所有输入框按用户设置（缺省 12——代码创建隐式 TextBox 样式）
+        ApplyFontStyle((double)services.Preferences.FontSize);
+
+        // 激活集合 → Roots（**先同步**——PrepareModConfig/迁移/扫描都要用正确的 Roots 计算 modRoot）
+        SyncRootsFromActiveProfile(services.Preferences);
 
         // 模组偏好：存于最高优先级根目录的 .smt/（模组前缀、样式导出开关）
         PrepareModConfig(services);
@@ -165,7 +174,7 @@ public partial class App : Application
         var overlay = new StatusOverlay();
         overlay.Title = services.Localisation.Get("app.title");
         // 有集合（RootsProfiles）就不弹选择界面——默认打开上一次使用的集合（ActiveRootsProfile）
-        bool hasAnything = services.Preferences.HasRoots || services.Preferences.RootsProfiles.Count > 0;
+        bool hasAnything = services.Preferences.RootsProfiles.Count > 0;
         if (!hasAnything)
         {
             var rootsWindow = new RootsWindow(services);
@@ -179,7 +188,11 @@ public partial class App : Application
                 Shutdown();
                 return;
             }
+            // 用户选了目录 → 重新准备模组配置（modRoot 更新为新的最后一位）
+            PrepareModConfig(services);
         }
+        // 激活集合有效 → Roots = 集合目录（用户记录的是用哪个播放集；启动/重载按集合加载）
+        SyncRootsFromActiveProfile(services.Preferences);
         // Roots 为空：激活集合有目录 → 用上次集合；否则 exe 旁 explode 兜底（UI 隐藏，忘设置也能保存）
         EnsureRootsFallback(services.Preferences);
 
@@ -193,6 +206,7 @@ public partial class App : Application
         try
         {
             await System.Threading.Tasks.Task.Run(() => InitializeEngines(services, overlay));
+            LoggerSetup.GetFactory().CreateLogger("Boot").LogInformation("扫描完成，开始构造主窗口");
         }
         catch (Exception ex)
         {
@@ -210,8 +224,13 @@ public partial class App : Application
         {
             var mainWindow = new MainWindow(services);
             MainWindow = mainWindow;
-            overlay.Close();
+            // 时序：先开主界面，再关浮窗（浮窗遮盖到主窗口就绪，视觉连续）
+            var bootLog = LoggerSetup.GetFactory().CreateLogger("Boot");
+            bootLog.LogInformation("主窗口构造完成，准备 Show");
             mainWindow.Show();
+            bootLog.LogInformation("主窗口已 Show");
+            overlay.Close();
+            bootLog.LogInformation("浮窗已关闭，OnStartup 完成");
         }
         catch (Exception ex)
         {
@@ -243,11 +262,50 @@ public partial class App : Application
         services.ModPrefs = ModPreferences.Load(modRoot);
         services.ModPrefix = services.ModPrefs.ModPrefix;
 
-        // 本地配置管理器（银河类别 galaxy.json）：银河样式相关设置一律存此类别
+        // 本地配置管理器（银河类别 galaxy.json）：银河样式相关设置一律存此类别。
+        // modRoot 为空（Roots 全空）时落到标准临时位置 sandbox/.smt（与 EnsureRootsFallback 的
+        // explode 兜底目录一致——绝不把 galaxy.json 写到 exe 旁 config，不留垃圾）
         string configRoot = string.IsNullOrEmpty(modRoot)
-            ? System.IO.Path.Combine(AppContext.BaseDirectory, "config")
+            ? System.IO.Path.Combine(AppContext.BaseDirectory, "sandbox", ".smt")
             : System.IO.Path.Combine(modRoot, ".smt");
         services.ConfigManager = new Stellaris.Engine.LocalConfigManager.LocalConfigManager(configRoot);
+    }
+
+    /// <summary>全局统一字号：创建/重建隐式 TextBox 样式（FontSize = size）。
+    /// 用代码创建（避免 XAML sys:Double 在 net10 运行时解析崩溃）；设置页改字号时重建即时生效。</summary>
+    public static void ApplyFontStyle(double size)
+    {
+        try
+        {
+            var style = new System.Windows.Style(typeof(System.Windows.Controls.TextBox));
+            style.Setters.Add(new System.Windows.Setter(
+                System.Windows.Controls.Control.FontSizeProperty, size));
+            Application.Current.Resources[typeof(System.Windows.Controls.TextBox)] = style;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[App] 应用全局字号失败: {ex.Message}");
+        }
+    }
+
+    /// <summary>激活集合（ActiveRootsProfile）有效 → 把 Roots 覆盖为集合目录。
+    /// 用户已确认"记录的是用哪个播放集"——启动/重载一律按播放集加载，Roots 仅作内存实际目录。
+    /// 集合为空或不存在时不动 Roots。返回是否已同步。</summary>
+    private static bool SyncRootsFromActiveProfile(UserPreferences prefs)
+    {
+        // 激活集合缺失 → 默认第 1 个（用户要求：缺失默认播放第 1 个）
+        if (string.IsNullOrEmpty(prefs.ActiveRootsProfile)
+            || !prefs.RootsProfiles.ContainsKey(prefs.ActiveRootsProfile))
+        {
+            if (prefs.RootsProfiles.Count == 0)
+                return false;
+            prefs.ActiveRootsProfile = prefs.RootsProfiles.Keys.First();
+        }
+        var dirs = prefs.RootsProfiles[prefs.ActiveRootsProfile];
+        prefs.Roots.Clear();
+        prefs.Roots.AddRange(dirs);
+        prefs.Save();
+        return true;
     }
 
     /// <summary>
@@ -285,7 +343,8 @@ public partial class App : Application
         if (_services == null)
             return;
 
-        // 第一步：Roots 空（如空集合）→ explode 兜底；确保最新路径列表已写入本地用户配置
+        // 第一步：按激活集合同步 Roots（用户记录的是用哪个播放集）→ Roots 空则 explode 兜底
+        SyncRootsFromActiveProfile(_services.Preferences);
         EnsureRootsFallback(_services.Preferences);
         _services.Preferences.Save();
 
@@ -325,8 +384,9 @@ public partial class App : Application
             {
                 var mainWindow = new MainWindow(_services);
                 MainWindow = mainWindow;
-                overlay.Close();
+                // 时序：先开主界面，再关浮窗（与启动一致）
                 mainWindow.Show();
+                overlay.Close();
             }
             catch (Exception ex)
             {
@@ -353,7 +413,9 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// 后台线程初始化：SA → IA → SM → GalaxyStyle → GalaxyMap。
+    /// 后台线程初始化：分层绝对次序（用户规范）——
+    /// 行1 SA → 行2 本地化+IA → 行3 子图形（单开）→ 行4 星系样式+加成+恒星系预设+战略资源 →
+    /// 行5 地图+法令决议+科技。不同层绝对串行，行内不得跳跃/回调。
     /// 通过各引擎 TaskChanged 事件将进度汇报到浮层（规范 4.4）。
     /// </summary>
     private void InitializeEngines(EngineServices services, StatusOverlay overlay)
@@ -363,7 +425,13 @@ public partial class App : Application
             => overlay.SetStatus(main, sub);
 
         // ---- SA 初始化（订阅扫描进度）----
-        services.Adapter = new StellarisAdapter();
+        services.Adapter = new StellarisAdapter
+        {
+            // 解析层覆盖规则：只读一次（static_modifiers/events 等）→ 最早 root 生效
+            Rules = new Stellaris.Parser.Rules.RulesReader(),
+            // 标记为"游戏"的 root（只读一次跳过它——不算最早）
+            GameRoot = services.Preferences.GameRoot
+        };
         services.Adapter.TaskChanged += (_, args) =>
         {
             string? text = args.TaskType switch
@@ -385,13 +453,27 @@ public partial class App : Application
         Report(loc.Get("status.scanning_all"));
         services.Adapter.ScanAll();
 
-        // ---- ImageAssetEngine / SpriteManagementEngine ----
+        // ==================================================================
+        // 引擎初始化绝对次序（用户规范）：不同层绝对串行，行内不得跳跃/回调。
+        //   行1 SA 全局初始化 → 行2 本地化+IA → 行3 子图形（单开）
+        //   → 行4 星系样式+加成 → 行5 地图+法令决议+科技（+战略资源+恒星系预设）
+        // 每层完成才允许开启下一层；同一层内的引擎只读 Adapter、互不调用。
+        // ==================================================================
+
+        // ---- 行2：本地化 + 图像素材引擎（只依赖 SA）----
+        // 语言字典引擎（只读；唯一允许使用正则的位置）
+        services.DictionaryEngine = new Stellaris.Engine.Localisation.LocalisationDictionaryEngine(
+            services.Adapter, LoggerSetup.GetFactory().CreateLogger("LocalisationDictionary"));
         services.ImageEngine = new ImageAssetEngine(services.Preferences.Roots);
+
+        // ---- 行3：子图形引擎（单开一个阶段；依赖行2 的 IA）----
         Report(loc.Get("status.sprite_index"));
         services.SpriteEngine = new SpriteManagementEngine(services.Adapter, services.ImageEngine,
             LoggerSetup.GetFactory().CreateLogger("Sprite"));
 
-        // ---- GalaxyStyleEngine ----
+        // ---- 行4：星系样式引擎 + 加成字典引擎 + 恒星系预设 + 战略资源
+        //          （依赖行3 的子图形 / SA；恒星系预设与战略资源被行5 的地图/法令决议/科技调用，
+        //           必须在行5 之前完成）----
         Report(loc.Get("status.loading_styles"));
         services.StyleEngine = new GalaxyStyleEngine(
             services.Adapter, services.ImageEngine, services.SpriteEngine, services.ModPrefix,
@@ -399,10 +481,36 @@ public partial class App : Application
             logger: LoggerSetup.GetFactory().CreateLogger("Style"));
         // 启用语种来自模组偏好（ModPreferences，与 ModPrefix 同级）
         services.StyleEngine.SetEnabledLanguages(services.ModPrefs?.EnabledLanguages);
+        // 应用 galaxy.json 里保存的样式顺序（拖拽排序——重启/重载后恢复）
+        services.StyleEngine.ApplyStoredStyleOrder();
         services.StyleEngine.TaskChanged += (_, args) =>
             Report(loc.Get("status.loading_styles"), args.Argument);
 
-        // ---- GalaxyMapEngine ----
+        // 加成字典引擎（只读；全 AST 扫描）——本层依赖 SA（行1 已全局完成），同步扫描
+        var modEngine = new Stellaris.Engine.StaticModifier.StaticModifierEngine(
+            services.Adapter, LoggerSetup.GetFactory().CreateLogger("StaticModifier"));
+        services.StaticModifierEngine = modEngine;
+        try
+        {
+            modEngine.ScanAll();
+        }
+        catch (Exception ex)
+        {
+            LoggerSetup.GetFactory().CreateLogger("StaticModifier").LogError(ex, "加成字典扫描失败");
+        }
+
+        // 恒星系预设引擎（行5 的地图/页面会调用——行4 内完成）
+        services.SystemInitializerEngine = new SystemInitializerEngine(services.Adapter,
+            LoggerSetup.GetFactory().CreateLogger("Initializer"));
+
+        // 战略资源引擎：初始化时对固定路径做撞击重扫描（顶层 key 合并超大表）。
+        // 法令/决议的 resources 模型复用本引擎（行5）——行4 内完成
+        var resEngine = new Stellaris.Engine.StrategicResource.StrategicResourceEngine(
+            services.Adapter, LoggerSetup.GetFactory().CreateLogger("StrategicResource"));
+        resEngine.ScanAll();
+        services.StrategicResourceEngine = resEngine;
+
+        // ---- 行5：地图引擎 + 法令/决议 + 科技引擎（依赖前 4 行；科技依赖行4 的加成引擎）----
         Report(loc.Get("status.loading_maps"));
         services.MapEngine = new GalaxyMapEngine(
             services.Adapter, services.StyleEngine, services.ImageEngine,
@@ -413,13 +521,37 @@ public partial class App : Application
             Report(loc.Get("status.loading_maps"), args.Argument);
         services.MapEngine.ScanAll();
 
-        // 恒星系预设引擎（第一阶段：扫描；后续可视化编辑）
-        services.SystemInitializerEngine = new SystemInitializerEngine(services.Adapter,
-            LoggerSetup.GetFactory().CreateLogger("Initializer"));
+        // 法令/决议引擎（只读扫描 + 内存新建 + 字段级保存）
+        services.EdictDecisionEngine = new Stellaris.Engine.EdictDecision.EdictDecisionEngine(
+            services.Adapter, LoggerSetup.GetFactory().CreateLogger("EdictDecision"),
+            services.ModPrefs?.EnabledLanguages);
 
-        // 语言字典引擎（只读；唯一允许使用正则的位置）
-        services.DictionaryEngine = new Stellaris.Engine.Localisation.LocalisationDictionaryEngine(
-            services.Adapter, LoggerSetup.GetFactory().CreateLogger("LocalisationDictionary"));
+        // 科技引擎（只读浏览 + 专属索引；modifier 本地化复用 StaticModifierEngine）
+        // 依赖行4 的加成引擎（已同步扫描完成）——前置引擎完成后才开启自身
+        var techEngine = new Stellaris.Engine.Technology.TechnologyEngine(
+            services.Adapter, modEngine, LoggerSetup.GetFactory().CreateLogger("Technology"));
+        services.TechnologyEngine = techEngine;
+        try
+        {
+            techEngine.ScanAll();
+        }
+        catch (Exception ex)
+        {
+            LoggerSetup.GetFactory().CreateLogger("Technology").LogError(ex, "科技引擎索引失败");
+        }
+
+        // 舰船引擎（只读索引）：舰船文件夹根 block 的解锁索引 + 本地化名（命名规则特殊）
+        var shipEngine = new Stellaris.Engine.Ship.ShipEngine(
+            services.Adapter, LoggerSetup.GetFactory().CreateLogger("Ship"));
+        services.ShipEngine = shipEngine;
+        try
+        {
+            shipEngine.ScanAll();
+        }
+        catch (Exception ex)
+        {
+            LoggerSetup.GetFactory().CreateLogger("Ship").LogError(ex, "舰船引擎索引失败");
+        }
 
         // 默认锁定本地化：原版预设（huge/large/medium/small/tiny 等，galaxy.json 写死可改）
         try
@@ -508,7 +640,120 @@ public partial class App : Application
             // 无映射或格式不符 → 忽略（同名兜底已由 RebuildStaticStyleMapping 处理）
         }
 
+        // ---- 通用初始化段：半隐藏自用拓展（key 提取导出）----
+        // 非功能——不建引擎；若 .smt/_key_extract.json 存在则扫描全部配置并按 100% 匹配 key
+        // 提取 block/list 值，导出 .smt/_key_extract.md（用户正常接触不到该配置）
+        try
+        {
+            RunKeyExtractIfConfigured(services);
+        }
+        catch (Exception ex)
+        {
+            LoggerSetup.GetFactory().CreateLogger("KeyExtract").LogError(ex, "key 提取导出失败");
+        }
+
         Report(loc.Get("status.done"));
+    }
+
+    /// <summary>
+    /// 半隐藏自用拓展（非功能——不建引擎）：读取 Roots 最后一位的 .smt/_key_extract.json
+    /// （不存在 → 跳过）。配置 = {"keys": ["..."]} 或直接数组。对全部配置文件（SA 合并 AST）
+    /// 做 **key 100% 匹配**（Ordinal）搜索：匹配节点为 Block → 收集顶级 Simple 子键；
+    /// 为 List → 收集子值去重合并。结果导出为 .smt/_key_extract.md（经 SA WriteExportFile）。
+    /// </summary>
+    private void RunKeyExtractIfConfigured(EngineServices services)
+    {
+        var adapter = services.Adapter;
+        if (adapter == null)
+            return;
+        const string configRel = ".smt/_key_extract.json";
+        const string exportRel = ".smt/_key_extract.md";
+        var raw = adapter.ReadTextFile(configRel);
+        if (string.IsNullOrWhiteSpace(raw))
+            return;   // 半隐藏：未配置 → 完全跳过
+        var keys = new List<string>();
+        using (var doc = System.Text.Json.JsonDocument.Parse(raw))
+        {
+            if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                foreach (var el in doc.RootElement.EnumerateArray())
+                    if (el.ValueKind == System.Text.Json.JsonValueKind.String)
+                        keys.Add(el.GetString() ?? "");
+            }
+            else if (doc.RootElement.TryGetProperty("keys", out var arr)
+                     && arr.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                foreach (var el in arr.EnumerateArray())
+                    if (el.ValueKind == System.Text.Json.JsonValueKind.String)
+                        keys.Add(el.GetString() ?? "");
+            }
+        }
+        if (keys.Count == 0)
+            return;
+        // 扫描全部配置文件（合并 AST）
+        var results = new Dictionary<string, (List<string> Blocks, List<string> Lists)>(StringComparer.Ordinal);
+        foreach (var key in keys)
+            results[key] = (new List<string>(), new List<string>());
+        foreach (var result in adapter.GetAllConfigs().Values)
+        {
+            foreach (var root in result.RootNodes)
+                WalkKeyExtract(root, results);
+        }
+        // 生成 md：每个 key **单独一节**——`## key` + `> key` 引用块，值**逐行**列出（不逗号合并），
+        // key 之间多空几行（换行不要钱）
+        var sb = new System.Text.StringBuilder();
+        foreach (var key in keys)
+        {
+            var (blocks, lists) = results[key];
+            sb.AppendLine();
+            sb.AppendLine();
+            sb.AppendLine();
+            sb.AppendLine();
+            sb.AppendLine("## " + key);
+            sb.AppendLine("> " + key);
+            foreach (var b in blocks)
+                sb.AppendLine(b);
+            foreach (var l in lists)
+                sb.AppendLine(l);
+        }
+        adapter.WriteExportFile(exportRel, sb.ToString());
+        LoggerSetup.GetFactory().CreateLogger("KeyExtract")
+            .LogInformation("key 提取导出完成: {Count} 个 key → {Rel}", keys.Count, exportRel);
+    }
+
+    /// <summary>递归遍历：节点 Key 100% 匹配 → Block 收集顶级 Simple 子键；List 收集子值去重。</summary>
+    private static void WalkKeyExtract(Stellaris.Parser.AstNode node,
+        Dictionary<string, (List<string> Blocks, List<string> Lists)> results)
+    {
+        if (node == null)
+            return;
+        if (!string.IsNullOrEmpty(node.Key) && results.TryGetValue(node.Key, out var bucket))
+        {
+            if (node.Children != null && node.Children.Count > 0)
+            {
+                if (node.Type == Stellaris.Parser.NodeType.List)
+                {
+                    foreach (var child in node.Children)
+                    {
+                        var v = child.Value?.ToString();
+                        if (!string.IsNullOrEmpty(v) && !bucket.Lists.Contains(v))
+                            bucket.Lists.Add(v);
+                    }
+                }
+                else
+                {
+                    foreach (var child in node.Children)
+                    {
+                        if (child.Type == Stellaris.Parser.NodeType.Simple && !string.IsNullOrEmpty(child.Key)
+                            && !bucket.Blocks.Contains(child.Key))
+                            bucket.Blocks.Add(child.Key);
+                    }
+                }
+            }
+        }
+        if (node.Children != null)
+            foreach (var child in node.Children)
+                WalkKeyExtract(child, results);
     }
 
     /// <summary>将初始化异常完整写入 exe 旁 error.log（含内部异常与堆栈）。</summary>

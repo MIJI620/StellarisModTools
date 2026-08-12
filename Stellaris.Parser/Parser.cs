@@ -169,6 +169,12 @@ public class Parser
 
         if (_pos + 1 >= _tokens.Count)
         {
+            // 顶层最后一个 token 无后续 → 裸值行（清单文件末行）
+            if (_blockStack.Count == 1)
+            {
+                AddBareValueNode(keyToken, startLine, startCol);
+                return;
+            }
             AddError(startLine, startCol, $"Incomplete statement after key '{key}'");
             _pos++;
             return;
@@ -198,7 +204,36 @@ public class Parser
             return;
         }
 
+        // ===== 裸值行支持：key token 后无分隔符（且非块引导符）→ 顶层裸值 Simple（Key=null）。
+        // 清单文件场景（inline script 内容如 shelter_all_building_set：每行一个值）。
+        // 仅顶层上下文允许（块内裸值仍报错——块内 List 由 ParseBlockOrList 处理）。
+        if (_blockStack.Count == 1 && next.Type != TokenType.Lbrace)
+        {
+            AddBareValueNode(keyToken, startLine, startCol);
+            return;
+        }
+
         AddError(startLine, startCol, $"期望分隔符 ( = > < >= <= )，实际得到 '{next.Type}'，键 '{key}' 后必须跟分隔符");
+        _pos++;
+    }
+
+    /// <summary>裸值行：顶层无分隔符的词 → Key=null 的 Simple 节点（清单文件每行一个值）。</summary>
+    private void AddBareValueNode(Token keyToken, int startLine, int startCol)
+    {
+        string bareValue = keyToken.Value?.ToString() ?? string.Empty;
+        var bareNode = new AstNode
+        {
+            Type = NodeType.Simple,
+            Key = null,
+            Value = bareValue,
+            StartLine = startLine,
+            StartColumn = startCol,
+            EndLine = startLine,
+            EndColumn = startCol + bareValue.Length
+        };
+        AttachPendingComments(bareNode);
+        _rootNodes.Add(bareNode);
+        _lastStatementNode = bareNode;
         _pos++;
     }
 
@@ -364,11 +399,12 @@ public class Parser
             if (tok.Line > startLine)
                 isMultiLine = true;
 
-            // 处理键值对：键允许 Ident、Number、Constant
+            // 处理键值对：键允许 Ident、Number、Constant；分隔符 = < > <= >=（块内同顶层——比较运算符保留）
             if ((tok.Type == TokenType.Ident || tok.Type == TokenType.Number || tok.Type == TokenType.Constant) &&
-                _pos + 1 < _tokens.Count && _tokens[_pos + 1].Type == TokenType.Equals)
+                _pos + 1 < _tokens.Count && IsSeparator(_tokens[_pos + 1].Type))
             {
                 Token eqTok = _tokens[_pos + 1];
+                TokenType innerSep = eqTok.Type;
                 if (eqTok.Line != tok.Line)
                 {
                     AddError(eqTok.Line, eqTok.Column, $"'=' must be on same line as key '{tok.Value}'");
@@ -388,9 +424,31 @@ public class Parser
 
                 Token valTok = _tokens[_pos];
 
+                // 比较运算符（> < >= <=）后不允许双引号字符串（同顶层规则）
+                if (innerSep != TokenType.Equals && valTok.Type == TokenType.String)
+                {
+                    AddError(valTok.Line, valTok.Column, $"分隔符 '{innerSep}' 后不允许双引号字符串，只允许数字、常量或未加引号字符串");
+                    _pos++;
+                    continue;
+                }
+
                 // 检查值是否为 Lbrace（嵌套块/列表）
                 if (valTok.Type == TokenType.Lbrace)
                 {
+                    if (innerSep != TokenType.Equals)
+                    {
+                        AddError(valTok.Line, valTok.Column, $"分隔符 '{innerSep}' 后不允许跟块或列表，只有 '=' 可以引导块");
+                        int depth = 1;
+                        _pos++;
+                        while (_pos < _tokens.Count && depth > 0)
+                        {
+                            Token t = _tokens[_pos];
+                            if (t.Type == TokenType.Lbrace) depth++;
+                            else if (t.Type == TokenType.Rbrace) depth--;
+                            _pos++;
+                        }
+                        continue;
+                    }
                     var innerPending = new List<AstNode>(_pendingComments);
                     _pendingComments.Clear();
                     var nestedChild = ParseBlockOrList(innerKey, innerStartLine, innerStartCol, innerPending);
@@ -418,6 +476,7 @@ public class Parser
                     StartColumn = innerStartCol,
                     EndColumn = valEndCol,
                     OriginalLayout = OriginalLayout.SingleLine,
+                    SeparatorType = innerSep,
                     RawText = GetRawText(valTok)
                 };
                 children.Add(childNode);

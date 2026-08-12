@@ -1,0 +1,74 @@
+<!-- 加成字典页（只读）：全 AST 扫描 static_modifiers + modifier 引用，双向查询。
+     左列：类型导航（竖排——类似左侧导航栏：全部/基础/自定义）。
+     行0：搜索框 + 隐藏筛选 + 搜索按钮（最顶一行）。
+     内容区：结果表格 + 右侧详情（选中条目）。 -->
+<UserControl x:Class="Stellaris.Editor.Pages.ModifierDictionaryPage"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid Margin="8">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- 行0：搜索框 + 隐藏筛选 + 搜索按钮（最顶一行） -->
+        <Grid Grid.Row="0" Margin="0,0,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" MinWidth="60" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <ComboBox x:Name="HiddenCombo" Width="100" Margin="0,0,12,0" VerticalAlignment="Center" />
+            <TextBox x:Name="PatternBox" Grid.Column="1" Margin="0,0,12,0" VerticalAlignment="Center"
+                     TextWrapping="Wrap" KeyDown="OnPatternBoxKeyDown" />
+            <Button x:Name="SearchButton" Grid.Column="2" Padding="6,3" Click="OnSearch"
+                    VerticalAlignment="Center" IsDefault="True" Style="{StaticResource SearchButtonStyle}" />
+        </Grid>
+
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="150" />
+                <ColumnDefinition Width="3" />
+                <ColumnDefinition Width="2*" />
+                <ColumnDefinition Width="3" />
+                <ColumnDefinition Width="3*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- 左：类型导航（竖排 ListBox——全部/基础/自定义） -->
+            <ListBox x:Name="TypeNav" Grid.Column="0" SelectionChanged="OnTypeNavChanged"
+                     Background="White" />
+
+            <GridSplitter Grid.Column="1" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                          Width="3" Background="LightGray" />
+
+            <!-- 结果表格 -->
+            <DataGrid x:Name="ResultGrid" Grid.Column="2" AutoGenerateColumns="False" IsReadOnly="True"
+                      SelectionMode="Extended" HeadersVisibility="Column" CanUserSortColumns="True"
+                      Background="White" RowHeaderWidth="0" SelectionChanged="OnSelectionChanged">
+                <DataGrid.ContextMenu>
+                    <ContextMenu>
+                        <MenuItem x:Name="ExportDetailMenuItem" Click="OnExportSelectedDetails" />
+                    </ContextMenu>
+                </DataGrid.ContextMenu>
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="类型" Binding="{Binding Type}" Width="70" />
+                    <DataGridTextColumn Header="名称" Binding="{Binding Name}" Width="2*" />
+                    <DataGridTextColumn Header="当前语言显示" Binding="{Binding Display}" Width="2*" />
+                    <DataGridTextColumn Header="隐藏" Binding="{Binding HiddenText}" Width="50" />
+                </DataGrid.Columns>
+            </DataGrid>
+
+            <GridSplitter Grid.Column="3" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                          Width="3" Background="LightGray" />
+
+            <!-- 详情面板（只读文本行，选中更新） -->
+            <ScrollViewer Grid.Column="4" VerticalScrollBarVisibility="Auto">
+                <StackPanel x:Name="DetailPanel" Margin="8,0,0,0" />
+            </ScrollViewer>
+        </Grid>
+
+        <!-- 状态栏 -->
+        <TextBlock x:Name="StatusText" Grid.Row="1" VerticalAlignment="Bottom"
+                   Foreground="Gray" Margin="0,4,0,0" />
+    </Grid>
+</UserControl>

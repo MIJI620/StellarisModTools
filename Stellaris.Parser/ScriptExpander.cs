@@ -33,8 +33,11 @@ namespace Stellaris.Parser
             // - NodeType.InlineScript：兼容旧解析产物
             // - Block 且键名为 "inline_script"：新解析产物的通用块（引擎层按
             //   黑箱引擎唯一支持的内联键名识别，键名不可更改）
+            // - Simple 且键名为 "inline_script"：`inline_script = "xxx"` 直接引用
+            //   ——按 key 判定，与游戏一致，三种形式都要展开（值即脚本名，无参数）
             if (node.Type == NodeType.InlineScript ||
-                (node.Type == NodeType.Block && node.Key == "inline_script"))
+                (node.Type == NodeType.Block && node.Key == "inline_script") ||
+                (node.Type == NodeType.Simple && node.Key == "inline_script"))
             {
                 return ExpandInlineScript(node);
             }
@@ -59,17 +62,25 @@ namespace Stellaris.Parser
             string? scriptPath = null;
             var localParams = new Dictionary<string, object?>();
 
-            foreach (var child in node.Children)
+            if (node.Type == NodeType.Simple)
             {
-                if (child.Type == NodeType.Simple)
+                // simple 形式：inline_script = "xxx" —— 值即脚本名，无参数（等价无参 block 形式）
+                scriptPath = node.Value?.ToString();
+            }
+            else
+            {
+                foreach (var child in node.Children)
                 {
-                    if (child.Key == "script")
+                    if (child.Type == NodeType.Simple)
                     {
-                        scriptPath = child.Value?.ToString();
-                    }
-                    else
-                    {
-                        localParams[child.Key ?? string.Empty] = child.Value;
+                        if (child.Key == "script")
+                        {
+                            scriptPath = child.Value?.ToString();
+                        }
+                        else
+                        {
+                            localParams[child.Key ?? string.Empty] = child.Value;
+                        }
                     }
                 }
             }
